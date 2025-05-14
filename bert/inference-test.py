@@ -70,7 +70,7 @@ def evaluate(batch_size: int = 16):
         texts = []
         labels = []
         for row in batch:
-            features = {k.strip().upper(): v for k, v in row.items() if k.strip().upper() != LABEL_KEY.strip().upper()}
+            features = {k: v for k, v in row.items() if k.strip().upper() != LABEL_KEY.strip().upper()}
             text = "; ".join(f"\"{k}\":{v}" for k, v in features.items())
             texts.append(text)
             labels.append(row[LABEL_KEY].strip().upper())
