@@ -42,16 +42,15 @@ WARMUP_RATIO     = 0.05    # 5% of dataset rows used as warmup
 MAX_LENGTH       = 256
 CHECKPOINT_DIR   = "./checkpoints"
 LOG_DIR          = os.path.join(CHECKPOINT_DIR, "logs")
+SEED             = 21023 + 21041
 
 # Create directories and seed the RNG
 os.makedirs(CHECKPOINT_DIR, exist_ok=True)
 os.makedirs(LOG_DIR, exist_ok=True)
 LOG_FILE = os.path.join(LOG_DIR, "checkpoint_log.txt")
 
-SEED = 21023 + 21041
-random.seed(SEED)
-torch.manual_seed(SEED)
-torch.cuda.manual_seed_all(SEED)
+# torch.manual_seed(SEED)
+# torch.cuda.manual_seed_all(SEED)
 
 # ---------------------------------------------------------------------------- #
 #                               MODEL & TOKENIZER                              #
@@ -210,23 +209,22 @@ def save_checkpoint(epoch, batch_idx=None, loss_val=None, epoch_loss=None, batch
 for epoch in range(start_epoch, NUM_EPOCHS):
     model.train()
 
-    # Decide indices and starting loss/batches
+    # Deterministically shuffle rows for this epoch
+    random.seed(SEED + epoch)
+    indices = list(range(total_rows))
+    random.shuffle(indices)
+
+    # If we're resuming mid‐epoch, drop the already‐processed examples
     if epoch == start_epoch and start_batch is not None:
-        # Resume mid-epoch
-        skip_items = (start_batch + 1) * BATCH_SIZE
-        indices = list(range(skip_items, total_rows))
-        shuffle_flag = False
-        epoch_loss = resumed_epoch_loss
+        skip = (start_batch + 1) * BATCH_SIZE
+        indices = indices[skip:]
+        epoch_loss     = resumed_epoch_loss
         batches_offset = resumed_batches
     else:
-        # Fresh epoch
-        indices = list(range(total_rows))
-        shuffle_flag = (epoch > start_epoch)
-        if shuffle_flag:
-            random.shuffle(indices)
-        epoch_loss = 0.0
+        epoch_loss     = 0.0
         batches_offset = 0
 
+    # Build DataLoader (shuffle=False because it's already shuffled)
     dataset = CICIDSDataset(rows, tokenizer, MAX_LENGTH, indices, reader.fieldnames)
     loader  = DataLoader(
         dataset,
@@ -236,9 +234,9 @@ for epoch in range(start_epoch, NUM_EPOCHS):
         pin_memory=True,
     )
     steps_in_epoch = math.ceil(len(indices) / BATCH_SIZE)
-    batches_since = 0
     pbar = tqdm(loader, total=steps_in_epoch, desc=f"Epoch {epoch+1}/{NUM_EPOCHS}")
 
+    batches_since = 0
     for batch_idx, batch in enumerate(pbar):
         optimizer.zero_grad()
         inputs = {k: v.to(device) for k, v in batch.items()}
@@ -251,11 +249,11 @@ for epoch in range(start_epoch, NUM_EPOCHS):
         scaler.update()
         scheduler.step()
 
-        loss_val = loss.item()
-        epoch_loss += loss_val
+        loss_val      = loss.item()
+        epoch_loss   += loss_val
         batches_since = batch_idx + 1
         total_batches = batches_offset + batches_since
-        avg_loss = epoch_loss / total_batches
+        avg_loss      = epoch_loss / total_batches
         pbar.set_postfix({"loss": f"{avg_loss:.4f}"})
 
         # On-demand save from typing 's' or 'c' + 'Enter' in the terminal while training

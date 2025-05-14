@@ -1,4 +1,5 @@
 /dataset/*.csv
+/dataset/*/*.csv
 */checkpoints/*
 *checkpoint*.pt
 

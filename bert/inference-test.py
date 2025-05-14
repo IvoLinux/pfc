@@ -12,7 +12,7 @@ CHECKPOINT_PATH  = None
 CANDIDATE_LABELS = ["BENIGN", "MALICIOUS"]
 CSV_PATH         = "../dataset/Monday-2017.csv"
 LABEL_KEY        = "Label"
-BATCH_SIZE       = 16
+BATCH_SIZE       = 8
 
 # 2. LOAD MODEL
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
