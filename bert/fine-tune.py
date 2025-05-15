@@ -32,7 +32,7 @@ args = parser.parse_args()
 # ---------------------------------------------------------------------------- #
 MODEL_NAME       = "distilbert-base-uncased"
 CANDIDATE_LABELS = ["BENIGN", "MALICIOUS"]
-CSV_PATH         = "../dataset/subset_cicids2017.csv"
+CSV_PATH         = "../dataset/preprocessed-data/train_split.csv"
 LABEL_KEY        = "Label"
 BATCH_SIZE       = 8
 NUM_EPOCHS       = 3
@@ -143,6 +143,7 @@ class CICIDSDataset(Dataset):
         # Build a dictionary {ATRBIUTE:VALUE} for each row
         feats = {k: v for k, v in row.items() if k.strip().upper() != LABEL_KEY.strip().upper()}
         text = "; ".join(f"\"{k.strip()}\":{v}" for k, v in feats.items())
+        # print(text)
         
         candidates = [
             h for h in self.fieldnames
