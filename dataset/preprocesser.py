@@ -16,15 +16,12 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 warnings.filterwarnings("ignore", category=UserWarning)
 warnings.filterwarnings("ignore", category=RuntimeWarning)
 
-RESULTS_SAVE_DIR = "./preprocessed-data"
-RAW_DATASET_DIR = "/home/bibber/Downloads/CIC-IDS 2017"
-os.makedirs(RESULTS_SAVE_DIR, exist_ok=True)
-
-# ─── CONFIG ─────────────────────────────────────────────────────────────────────
 # True  = encode your grouped labels into integers
 # False = keep the raw label strings (from the original CSV)
 ENCODE_LABELS = False
-# ────────────────────────────────────────────────────────────────────────────────
+RESULTS_SAVE_DIR = "./preprocessed-data"
+RAW_DATASET_DIR = "/home/bibber/Downloads/CIC-IDS 2017"
+os.makedirs(RESULTS_SAVE_DIR, exist_ok=True)
 
 def group_attack_labels(label):
     l = str(label).lower().strip()
@@ -138,34 +135,44 @@ if __name__ == "__main__":
         convert_mixed_types=True,
     )
 
-    # ─── Write out the TRAIN split with fixed-width decimals ─────────────────────────
+    # Write out the TRAIN split with fixed-width decimals
     print("Saving train_split.csv…")
     Xtr = X_train.compute()
     ytr = y_train.compute()
     df_tr = pd.DataFrame(Xtr, columns=X.columns)
     df_tr[label_col] = ytr
+    
+    float_cols = df_tr.select_dtypes(include=["float"]).columns.tolist()
+    out_path = os.path.join(RESULTS_SAVE_DIR, "train_split.csv")
 
-    # stream to CSV in 100 000-row chunks, 5 decimals
-    df_tr.to_csv(
-        os.path.join(RESULTS_SAVE_DIR, "train_split.csv"),
-        index=False,
-        chunksize=100_000,
-        float_format="%.5f"
-    )
+    # Stream to CSV in 100 000-row chunks, 5 decimals
+    with open(out_path, "w", newline="") as f:
+        df_tr.head(0).to_csv(f, index=False)
 
-    # ─── Write out the TEST split with fixed-width decimals ──────────────────────────
+        for start in range(0, len(df_tr), 100_000):
+            chunk = df_tr.iloc[start:start+100_000].copy()
+            chunk[float_cols] = chunk[float_cols].applymap(fmt_float)
+            chunk.to_csv(f, index=False, header=False)
+
+
+    # Write out the TEST split with fixed-width decimals
     print("Saving test_split.csv…")
     Xte = X_test.compute()
     yte = y_test.compute()
     df_te = pd.DataFrame(Xte, columns=X.columns)
     df_te[label_col] = yte
 
-    df_te.to_csv(
-        os.path.join(RESULTS_SAVE_DIR, "test_split.csv"),
-        index=False,
-        chunksize=100_000,
-        float_format="%.5f"
-    )
+    float_cols = df_te.select_dtypes(include=["float"]).columns.tolist()
+    out_path = os.path.join(RESULTS_SAVE_DIR, "test_split.csv")
+
+    with open(out_path, "w", newline="") as f:
+        df_te.head(0).to_csv(f, index=False)
+
+        for start in range(0, len(df_te), 100_000):
+            chunk = df_te.iloc[start:start+100_000].copy()
+            chunk[float_cols] = chunk[float_cols].applymap(fmt_float)
+            chunk.to_csv(f, index=False, header=False)
+
 
 
     # 10) Quick plot of your train-set class distribution
@@ -179,5 +186,12 @@ if __name__ == "__main__":
     scaler = DaskStandardScaler()
     X_train = scaler.fit_transform(X_train)
     X_test = scaler.transform(X_test)
+    
+    print("Scaling complete — now plotting the final class distribution…")
+    plot_class_distribution(
+        y_train,
+        "Class Distribution After Processing",
+        os.path.join(RESULTS_SAVE_DIR, 'after_processing.png')
+    )
 
     print(f"Preprocessing complete in {(time.time() - start_time):.1f}s")

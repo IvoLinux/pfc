@@ -62,12 +62,21 @@ model     = AutoModelForSequenceClassification.from_pretrained(
 ).to(device)
 
 # ---------------------------------------------------------------------------- #
-#                           COUNT ROWS IN DATASET                              #
+#                   BUILD CSV‐OFFSET INDEX & COUNT ROWS                         #
 # ---------------------------------------------------------------------------- #
-with open(CSV_PATH) as f:
-    reader = csv.DictReader(f)
-    rows = list(reader)
-total_rows       = len(rows)
+with open(CSV_PATH, "r", newline="") as f:
+    header_line = f.readline()
+    header = next(csv.reader([header_line]))
+
+    offsets = []
+    while True:
+        pos = f.tell()
+        line = f.readline()
+        if not line:
+            break
+        offsets.append(pos)
+
+total_rows        = len(offsets)
 batches_per_epoch = math.ceil(total_rows / BATCH_SIZE)
 total_steps       = batches_per_epoch * NUM_EPOCHS
 warmup_steps      = int(total_steps * WARMUP_RATIO)
@@ -127,34 +136,46 @@ else:
 # ---------------------------------------------------------------------------- #
 #                          MAP-STYLE DATASET DEFINITION                        #
 # ---------------------------------------------------------------------------- #
-class CICIDSDataset(Dataset):
-    def __init__(self, rows, tokenizer, max_length, indices, fieldnames):
-        self.rows = rows
-        self.tokenizer = tokenizer
+class IndexedCSV(Dataset):
+    """
+    A Dataset that keeps only integer offsets in RAM and
+    seeks directly to each CSV row when __getitem__ is called.
+    """
+    def __init__(self, csv_path, offsets, header, tokenizer, max_length, indices):
+        self.csv_path   = csv_path
+        self.offsets    = offsets
+        self.header     = header
+        self.tokenizer  = tokenizer
         self.max_length = max_length
-        self.fieldnames = fieldnames
-        self.indices = indices
+        self.indices    = indices
 
     def __len__(self):
         return len(self.indices)
 
     def __getitem__(self, idx):
-        row = self.rows[self.indices[idx]]
-        # Build a dictionary {ATRBIUTE:VALUE} for each row
-        feats = {k: v for k, v in row.items() if k.strip().upper() != LABEL_KEY.strip().upper()}
-        text = "; ".join(f"\"{k.strip()}\":{v}" for k, v in feats.items())
-        # print(text)
-        
-        candidates = [
-            h for h in self.fieldnames
-            if LABEL_KEY.lower() in h.strip().lower()
-        ]
-        if not candidates:
-            raise ValueError(f"No column matching '{LABEL_KEY}' in {self.fieldnames}")
-        label_col = candidates[0]
+        # find the file‐offset for this sample
+        off = self.offsets[self.indices[idx]]
+        # open & seek
+        with open(self.csv_path, "r", newline="") as f:
+            f.seek(off)
+            reader = csv.DictReader(f, fieldnames=self.header)
+            row = next(reader)
 
-        lab  = row[label_col].strip().upper()
-        label = 0 if "BENIGN" in lab.strip().upper() else 1
+        # build the text exactly as before
+        feats = {
+            k: v
+            for k, v in row.items()
+            if k.strip().upper() != LABEL_KEY.strip().upper()
+        }
+        text = "; ".join(f"\"{k.strip()}\":{v}" for k, v in feats.items())
+
+        # locate label column
+        label_col = next(
+            h for h in self.header
+            if LABEL_KEY.lower() in h.strip().lower()
+        )
+        lab = row[label_col].strip().upper()
+        label = 0 if "BENIGN" in lab else 1
 
         tokens = self.tokenizer(
             text,
@@ -224,15 +245,21 @@ for epoch in range(start_epoch, NUM_EPOCHS):
     else:
         epoch_loss     = 0.0
         batches_offset = 0
-
-    # Build DataLoader (shuffle=False because it's already shuffled)
-    dataset = CICIDSDataset(rows, tokenizer, MAX_LENGTH, indices, reader.fieldnames)
-    loader  = DataLoader(
+    # Build DataLoader with our offset‐indexed CSV
+    dataset = IndexedCSV(
+        csv_path   = CSV_PATH,
+        offsets    = offsets,
+        header     = header,
+        tokenizer  = tokenizer,
+        max_length = MAX_LENGTH,
+        indices    = indices,
+    )
+    loader = DataLoader(
         dataset,
-        batch_size=BATCH_SIZE,
-        shuffle=False,
-        num_workers=4,
-        pin_memory=True,
+        batch_size  = BATCH_SIZE,
+        shuffle     = False,   # already shuffled via `indices`
+        num_workers = 4,
+        pin_memory  = True,
     )
     steps_in_epoch = math.ceil(len(indices) / BATCH_SIZE)
     pbar = tqdm(loader, total=steps_in_epoch, desc=f"Epoch {epoch+1}/{NUM_EPOCHS}")
