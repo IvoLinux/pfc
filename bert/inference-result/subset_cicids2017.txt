@@ -1,9 +1,0 @@
-Final Results: 75900 samples
-True Negative: 49701 (65.48%)
-True Positive: 25509 (33.61%)
-False Positive: 299 (0.39%)
-False Negative: 391 (0.52%)
-Accuracy: 99.09%
-Precision: 98.84%
-Recall: 98.49%
-F1 Score: 98.67%

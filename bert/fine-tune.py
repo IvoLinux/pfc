@@ -53,7 +53,7 @@ LOG_FILE = os.path.join(LOG_DIR, "checkpoint_log.txt")
 # torch.cuda.manual_seed_all(SEED)
 
 # ---------------------------------------------------------------------------- #
-#                               MODEL & TOKENIZER                              #
+#                             MODEL & TOKENIZER                                #
 # ---------------------------------------------------------------------------- #
 device    = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
@@ -62,7 +62,7 @@ model     = AutoModelForSequenceClassification.from_pretrained(
 ).to(device)
 
 # ---------------------------------------------------------------------------- #
-#                   BUILD CSV‐OFFSET INDEX & COUNT ROWS                         #
+#                    BUILD CSV‐OFFSET INDEX & COUNT ROWS                       #
 # ---------------------------------------------------------------------------- #
 with open(CSV_PATH, "r", newline="") as f:
     header_line = f.readline()
@@ -226,7 +226,7 @@ def save_checkpoint(epoch, batch_idx=None, loss_val=None, epoch_loss=None, batch
     print(f"[checkpoint saved] {path}")
 
 # ---------------------------------------------------------------------------- #
-#                            TRAINING LOOP                                     #
+#                              TRAINING LOOP                                   #
 # ---------------------------------------------------------------------------- #
 for epoch in range(start_epoch, NUM_EPOCHS):
     model.train()
