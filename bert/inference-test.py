@@ -115,7 +115,7 @@ def evaluate(batch_size: int = 16):
         fout.write(f"Total Samples: {len(data)}\n")
 
     print(f"\nLogs saved to {out_dir}:")
-    print(f" • Raw predictions → {raw_path}")
+    print(f" • Raw predictions  → {raw_path}")
     print(f" • Summary stats    → {summary_path}")
     print(f" • Run info         → {info_path}")
 
