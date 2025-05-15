@@ -83,7 +83,6 @@ if __name__ == "__main__":
         if 'label' in c.strip().lower() or 'attack' in c.strip().lower() or 'category' in c.strip().lower()
     ]
     label_col = candidates[0] if candidates else df.columns[-1]
-    print("Target column:", label_col)
 
     # 2) Keep a copy of the raw CSV label
     df['original_label'] = df[label_col]
@@ -139,37 +138,35 @@ if __name__ == "__main__":
         convert_mixed_types=True,
     )
 
-    # ─── Write out the TRAIN split with trimmed decimals ─────────────────────────────
+    # ─── Write out the TRAIN split with fixed-width decimals ─────────────────────────
     print("Saving train_split.csv…")
     Xtr = X_train.compute()
     ytr = y_train.compute()
     df_tr = pd.DataFrame(Xtr, columns=X.columns)
     df_tr[label_col] = ytr
 
-    # convert float columns to formatted strings
-    float_cols = df_tr.select_dtypes(include=["float"]).columns
-    df_tr[float_cols] = df_tr[float_cols].applymap(fmt_float)
-
+    # stream to CSV in 100 000-row chunks, 5 decimals
     df_tr.to_csv(
         os.path.join(RESULTS_SAVE_DIR, "train_split.csv"),
-        index=False
+        index=False,
+        chunksize=100_000,
+        float_format="%.5f"
     )
 
-    # ─── Write out the TEST split with trimmed decimals ──────────────────────────────
+    # ─── Write out the TEST split with fixed-width decimals ──────────────────────────
     print("Saving test_split.csv…")
     Xte = X_test.compute()
     yte = y_test.compute()
     df_te = pd.DataFrame(Xte, columns=X.columns)
     df_te[label_col] = yte
 
-    # reuse the same formatter
-    float_cols = df_te.select_dtypes(include=["float"]).columns
-    df_te[float_cols] = df_te[float_cols].applymap(fmt_float)
-
     df_te.to_csv(
         os.path.join(RESULTS_SAVE_DIR, "test_split.csv"),
-        index=False
-)
+        index=False,
+        chunksize=100_000,
+        float_format="%.5f"
+    )
+
 
     # 10) Quick plot of your train-set class distribution
     plot_class_distribution(

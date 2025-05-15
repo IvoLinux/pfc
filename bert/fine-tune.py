@@ -154,7 +154,7 @@ class CICIDSDataset(Dataset):
         label_col = candidates[0]
 
         lab  = row[label_col].strip().upper()
-        label = 0 if lab == "BENIGN" else 1
+        label = 0 if "BENIGN" in lab.strip().upper() else 1
 
         tokens = self.tokenizer(
             text,
