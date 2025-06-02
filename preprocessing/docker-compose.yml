@@ -1,0 +1,13 @@
+version: '3.9'
+services:
+  rapids:
+    image: pfc-cic2017
+    container_name: pfc-cic2017
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+    ports:
+      - "8888:8888"
+    volumes:
+      - ./notebooks:/home/rapids/notebooks
+      - ./kaggle.json:/opt/kaggle.json:ro
