@@ -1,13 +1,13 @@
-Confusion Matrix (rows=true, cols=pred):
-[[454160    586]
- [  5630 103406]] 
+Confusion Matrix:
+[[1031254   16959]
+ [    312      50]]
 
 Classification Report:
               precision    recall  f1-score   support
 
-      BENIGN     0.9878    0.9987    0.9932    454746
-   MALICIOUS     0.9944    0.9246    0.9582    111836
+      BENIGN     0.9997    0.9838    0.9917   1048213
+   MALICIOUS     0.0029    0.1381    0.0058       362
 
-   micro avg     0.9890    0.9841    0.9865    566582
-   macro avg     0.9911    0.9617    0.9757    566582
-weighted avg     0.9891    0.9841    0.9863    566582
+    accuracy                         0.9835   1048575
+   macro avg     0.5013    0.5610    0.4987   1048575
+weighted avg     0.9994    0.9835    0.9914   1048575
