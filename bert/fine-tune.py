@@ -31,8 +31,8 @@ args = parser.parse_args()
 #                                  SETTINGS                                    #
 # ---------------------------------------------------------------------------- #
 MODEL_NAME       = "distilbert-base-uncased"
-CANDIDATE_LABELS = ["BENIGN", "MALICIOUS"]
-CSV_PATH         = "../dataset/preprocessed-data/train_split.csv"
+CANDIDATE_LABELS = ["Benign", "Botnet", "Brute_Force_Attack", "DoS_Attack", "Port_Scan_Infiltration", "Web_Attack", "Other"]
+CSV_PATH         = "dataset/CIC-IDS 2018/train_split.csv"
 LABEL_KEY        = "Label"
 BATCH_SIZE       = 8
 NUM_EPOCHS       = 3
@@ -194,6 +194,7 @@ class IndexedCSV(Dataset):
 #                            CHECKPOINT SAVER                                  #
 # ---------------------------------------------------------------------------- #
 def save_checkpoint(epoch, batch_idx=None, loss_val=None, epoch_loss=None, batches_done=None):
+    os.makedirs(CHECKPOINT_DIR, exist_ok=True)
     now = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     fname = f"checkpoint-epoch{epoch+1}"
     if batch_idx is not None:
@@ -201,29 +202,32 @@ def save_checkpoint(epoch, batch_idx=None, loss_val=None, epoch_loss=None, batch
     fname += f"-{now}.pt"
     path = os.path.join(CHECKPOINT_DIR, fname)
 
-    torch.save({
-        "epoch":                 epoch+1,
-        "batch_idx":             batch_idx,
-        "model_state_dict":      model.state_dict(),
-        "optimizer_state_dict":  optimizer.state_dict(),
-        "scheduler_state_dict":  scheduler.state_dict(),
-        "scaler_state_dict":     scaler.state_dict(),
-        "epoch_loss":            epoch_loss,
-        "batches_done":          batches_done,
-        "total_steps":           total_steps,
-        "warmup_steps":          warmup_steps,
-    }, path)
+    try:
+        torch.save({
+            "epoch":                 epoch+1,
+            "batch_idx":             batch_idx,
+            "model_state_dict":      model.state_dict(),
+            "optimizer_state_dict":  optimizer.state_dict(),
+            "scheduler_state_dict":  scheduler.state_dict(),
+            "scaler_state_dict":     scaler.state_dict(),
+            "epoch_loss":            epoch_loss,
+            "batches_done":          batches_done,
+            "total_steps":           total_steps,
+            "warmup_steps":          warmup_steps,
+        }, path)
 
-    # Log the checkpoint save
-    with open(LOG_FILE, "a") as log:
-        line = f"{datetime.datetime.now().isoformat()} | epoch {epoch+1}"
-        if batch_idx is not None:
-            line += f" | batch {batch_idx+1}"
-        if loss_val is not None:
-            line += f" | loss {loss_val:.4f}"
-        log.write(line + "\n")
+        with open(LOG_FILE, "a") as log:
+            line = f"{datetime.datetime.now().isoformat()} | epoch {epoch+1}"
+            if batch_idx is not None:
+                line += f" | batch {batch_idx+1}"
+            if loss_val is not None:
+                line += f" | loss {loss_val:.4f}"
+            log.write(line + "\n")
 
-    print(f"[checkpoint saved] {path}")
+        print(f"[checkpoint saved] {path}")
+
+    except Exception as e:
+        print(f"[⚠️ checkpoint failed] {e}", file=sys.stderr)
 
 # ---------------------------------------------------------------------------- #
 #                              TRAINING LOOP                                   #

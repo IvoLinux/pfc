@@ -25,9 +25,9 @@ os.makedirs(RESULTS_SAVE_DIR, exist_ok=True)
 
 def group_attack_labels(label):
     l = str(label).lower().strip()
-    if any(x in l for x in ['dos', 'ddos', 'slowloris', 'hulk', 'goldeneye']):
+    if any(x in l for x in ['dos', 'slowloris', 'hulk', 'goldeneye']):
         return 'DoS_Attack'
-    if any(x in l for x in ['bruteforce', 'ftp-patator', 'ssh-patator']):
+    if any(x in l for x in ['brute', 'force', 'ftp', 'ssh']):
         return 'Brute_Force_Attack'
     if any(x in l for x in ['web', 'sql', 'xss', 'injection']):
         return 'Web_Attack'
@@ -37,7 +37,7 @@ def group_attack_labels(label):
         return 'Botnet'
     if 'heartbleed' in l:
         return 'Heartbleed'
-    if l in ('benign', 'normal', 'legitimate'):
+    if l in ('benign', 'normal'):
         return 'Benign'
     return 'Other_Attack'
 
