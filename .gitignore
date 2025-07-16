@@ -1,7 +1,7 @@
 /dataset/*.csv
 /dataset/*/*.csv
 *checkpoint*.pt
-
+*.png
 
 
 # Automatically generated gitignore;
