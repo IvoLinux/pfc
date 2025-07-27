@@ -1,6 +1,0 @@
-Date: 2025-05-15
-Checkpoint: ./checkpoints/checkpoint-epoch1-20250515_060552.pt
-Model: distilbert-base-uncased
-Dataset: /home/bibber/Downloads/CIC-IDS 2018/02-22-2018.csv
-Batch Size: 8
-Total Samples: 1048575
