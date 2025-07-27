@@ -33,4 +33,4 @@ class InferenceResult(BaseModel):
     confusion_matrix: List[List[int]]
     predictions: Optional[list] = None
     info: Optional[Dict[str, Any]] = None
-    plot_filename: Optional[str] = None
+    images: List[str]

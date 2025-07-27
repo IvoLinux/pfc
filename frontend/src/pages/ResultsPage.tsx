@@ -23,7 +23,7 @@ export default function ResultsPage() {
 
   const fetchRes = async (id: string) => {
     try {
-      const r = await fetch(`${import.meta.env.VITE_API_URL}/api/results/${id}`);
+      const r = await fetch(`/api/results/${id}`);
       if (!r.ok) throw new Error('Failed to fetch results');
       setResults(await r.json());
     } catch (e) {

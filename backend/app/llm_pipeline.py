@@ -340,7 +340,8 @@ def infer_llm(
 
     for r in rows:
         feat = {k: v for k, v in r.items() if k.strip().lower() != "label"}
-        texts.append("; ".join(f"\"{k}\":{v}\"" for k, v in feat.items()))
+        text = serialize_row(feat)
+        texts.append(text)
         raw = r["Label"].strip().upper()
         # map to canonical case if possible, else keep raw
         true.append(label_map.get(raw, raw))
@@ -384,8 +385,8 @@ def infer_llm(
     cm = confusion_matrix(y_true, y_pred, labels=LABELS).tolist()
  
     # 5) prepare output dir
-    today = datetime.now().strftime("%Y-%m-%d")
-    out_dir = os.path.join(output_root, "inference", today)
+    job_id = os.path.basename(os.path.dirname(ckpt_path))
+    out_dir = os.path.join(output_root, "inference", job_id)
     os.makedirs(out_dir, exist_ok=True)
 
     # save raw preds
@@ -400,7 +401,7 @@ def infer_llm(
 
     # save info.json
     info = {
-        "date": today,
+        "date": datetime.now().strftime("%Y-%m-%d"),
         "model_name": MODEL_NAME,
         "checkpoint": os.path.basename(ckpt_path),
         "dataset": os.path.basename(dataset_path),
@@ -422,7 +423,7 @@ def infer_llm(
         "metrics": metrics,
         "confusion_matrix": cm,
         "info": info,
-        "plot_filename": "confusion_matrix.png",
+        "images": ["confusion_matrix.png"],
     }
     result_path = os.path.join(out_dir, "result.json")
     with open(result_path, "w") as f:
@@ -450,17 +451,15 @@ class IndexedCSV(Dataset):
             reader = csv.DictReader(f, fieldnames=self.header)
             row = next(reader)
 
-        # reconstruct the text
         feats = {
             k: v
             for k, v in row.items()
             if k.strip().upper() != "LABEL"
         }
-        text = "; ".join(f"\"{k.strip()}\":{v}" for k, v in feats.items())
+        text = serialize_row(feats)
 
         # map to binary label (your old logic)
-        lab = row[next(h for h in self.header
-                       if "label" in h.strip().lower())].strip().upper()
+        lab = row[next(h for h in self.header if "label" in h.strip().lower())].strip().upper()
         label = 0 if "BENIGN" in lab else 1
 
         tokens = self.tokenizer(
@@ -476,8 +475,6 @@ class IndexedCSV(Dataset):
             "labels":         torch.tensor(label, dtype=torch.long),
         }
 
-import numpy as np
-import matplotlib.pyplot as plt
 
 def plot_confusion_matrix(cm: np.ndarray, labels: list[str], out_path: str):
     fig, ax = plt.subplots(figsize=(8, 8))
@@ -525,3 +522,6 @@ def plot_confusion_matrix(cm: np.ndarray, labels: list[str], out_path: str):
 
     plt.savefig(out_path, dpi=150)
     plt.close(fig)
+
+def serialize_row(feats: dict[str,str]) -> str:
+    return "; ".join(f"\"{k}\":{v}" for k, v in feats.items())
