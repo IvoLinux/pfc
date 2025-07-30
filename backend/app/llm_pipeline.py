@@ -24,9 +24,10 @@ from sklearn.exceptions import UndefinedMetricWarning
 
 # hard‑coded for now
 CANDIDATE_LABELS = [
-    "Benign", "Botnet", "Brute_Force_Attack",
-    "DoS_Attack", "Port_Scan_Infiltration",
-    "Web_Attack", "Other"
+    # "Benign", "Botnet", "Brute_Force_Attack",
+    # "DoS_Attack", "Port_Scan_Infiltration",
+    # "Web_Attack", "Other"
+    "Benign", "Anomaly"
 ]
 
 
@@ -315,6 +316,10 @@ def infer_llm(
     Returns (metrics_dict, confusion_matrix, path_to_result_json).
     """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # print("CUDA available:", torch.cuda.is_available())
+    # print("Num GPUs:", torch.cuda.device_count())
+    if device == torch.device("cpu"):
+        return {}, [], ""
     # assume MODEL_NAME is recoverable or fixed per your project; you can hard‑code or pass it in
     MODEL_NAME = "distilbert-base-uncased"
     LABELS = ["Benign", "Botnet", "Brute_Force_Attack",
@@ -335,37 +340,70 @@ def infer_llm(
     # 2) read CSV & normalize to canonical LABELS
     rows = list(csv.DictReader(open(dataset_path)))
     texts, true = [], []
-    # build mapping from uppercase → canonical label
+    # # build mapping from uppercase → canonical label
     label_map = {lbl.upper(): lbl for lbl in LABELS}
 
     for r in rows:
-        feat = {k: v for k, v in r.items() if k.strip().lower() != "label"}
-        text = serialize_row(feat)
-        texts.append(text)
+    #     feat = {k: v for k, v in r.items() if k.strip().lower() != "label"}
+    #     text = serialize_row(feat)
+    #     texts.append(text)
+    #     if r.get("Label") is None:
+    #         warnings.warn(f"Malformed row in dataset. No 'Label' field in row: {r}. Skipping.", UserWarning)
+    #         continue
         raw = r["Label"].strip().upper()
-        # map to canonical case if possible, else keep raw
+    #     # map to canonical case if possible, else keep raw
         true.append(label_map.get(raw, raw))
+    rows = list(csv.DictReader(open(dataset_path)))
+    texts = [ serialize_row({k:v for k,v in r.items() if k.strip().lower()!="label"}) 
+              for r in rows ]
+    def collapse_label(raw: str) -> str:
+        return "Benign" if raw.strip().upper() == "BENIGN" else "Anomaly"
+    y_true = [ collapse_label(r["Label"]) for r in rows ]
 
     # 3) batched inference
-    preds = []
     BS = 8
-    for i in range(0, len(texts), BS):
-        batch = texts[i : i + BS]
+    total = len(texts)
+    num_batches = math.ceil(total / BS)
+    start_time = time.perf_counter()
+    if update_progress_cb:
+        update_progress_cb({"progress": 0, "batch": 0, "total_batches": num_batches})
+
+    preds = []
+    for batch_idx, start in enumerate(range(0, total, BS)):
+        batch = texts[start : start + BS]
         toks = tokenizer(batch, padding=True, truncation=True, return_tensors="pt").to(device)
         with torch.no_grad():
             logits = model(**toks).logits
         idxs = torch.argmax(logits, 1).cpu().tolist()
-        preds.extend([LABELS[i] for i in idxs])
+        batch_preds = [LABELS[i] for i in idxs]
+        # collapse to binary
+        batch_preds = ["Benign" if p.lower()=="benign" else "Anomaly" for p in batch_preds]
+        preds.extend(batch_preds)
+
+        # callback
+        if update_progress_cb:
+            step = batch_idx + 1
+            progress = step / num_batches * 100
+            elapsed = time.perf_counter() - start_time
+            eta = (elapsed / step) * (num_batches - step) if step > 0 else None
+            update_progress_cb({
+                "progress":     progress,
+                "batch":        step,
+                "total_batches":num_batches,
+                "elapsed":      elapsed,
+                "eta":          eta
+            })
 
     # 4) metrics + CM
-    y_true = true
     y_pred = preds
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", category=UndefinedMetricWarning)
         prec, rec, f1, _ = precision_recall_fscore_support(
             y_true,
             y_pred,
-            labels=LABELS,
+            # $
+            # labels=LABELS,
+            labels=["Benign","Anomaly"],
             zero_division=0,
         )
         report = classification_report(
@@ -428,6 +466,10 @@ def infer_llm(
     result_path = os.path.join(out_dir, "result.json")
     with open(result_path, "w") as f:
         json.dump(result, f, indent=2)
+        
+    if update_progress_cb:
+        update_progress_cb(100)
+
 
     return metrics, cm, result_path
 
