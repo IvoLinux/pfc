@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import {
   Table, TableBody, TableCell, TableContainer, TableHead, IconButton,
-  TableRow, Paper, LinearProgress, Link, Box, Tooltip, Typography
+  TableRow, Paper, LinearProgress, Box, Tooltip, Typography
 } from '@mui/material';
 import CloseIcon from '@mui/icons-material/Close'
 import SaveIcon from '@mui/icons-material/Save'
@@ -140,7 +140,7 @@ const stopJob = async (jobId: string) => {
 };
 
 const deleteJob = async (jobId: string) => {
-  if (window.confirm('Tem certeza que quer deletar esse job? Esta ação não pode ser desfeita.\nOs resultados e checkpoints não serão perdidos.')) {
+  if (window.confirm('Tem certeza que quer deletar esse job? Esta ação não pode ser desfeita.\nOs resultados e checkpoints permancerão guardados.')) {
     try {
       const res = await fetch(`/api/jobs/${jobId}`, { method: 'DELETE' });
       if (!res.ok) throw new Error('Falha ao deletar job');

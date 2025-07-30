@@ -52,12 +52,15 @@ export default function ResultsPage() {
     <Box>
       <Box display="flex" alignItems="center" mb={3}>
         <Button startIcon={<ArrowBackIcon />} onClick={() => navigate('/infer')}>Back</Button>
-        <Typography variant="h4" sx={{ ml: 2 }}>Inference Results – Job {jobId?.slice(0, 8)}…</Typography>
+        <Box ml={2} display="flex" flexDirection="column">
+          <Typography variant="h4">Resultados da inferência</Typography>
+          <Typography variant="h6">Job {jobId}</Typography>
+        </Box>
       </Box>
 
       <Grid container spacing={3}>
         <Grid item xs={12} md={6}>
-          <Typography variant="h5" gutterBottom>Model Metrics</Typography>
+          <Typography variant="h5" gutterBottom>Métricas do modelo</Typography>
           <Grid container spacing={2}>
             {Object.entries(results.metrics).map(([k, v]) => (
               <Grid item xs={6} key={k}>
@@ -71,7 +74,7 @@ export default function ResultsPage() {
         </Grid>
 
         <Grid item xs={12} md={6}>
-          <Typography variant="h5" gutterBottom>Confusion Matrix</Typography>
+          <Typography variant="h5" gutterBottom>Matriz de Confusão</Typography>
           <Paper sx={{ p: 2, overflow: 'auto' }}>
             <table style={{ width: '100%', borderCollapse: 'collapse' }}>
               <thead>
