@@ -33,7 +33,7 @@ LLM_CKPT_DIR      = "models_output/llm_checkpoints"
 INFER_DIR         = "models_output/inference"
 
 app.mount(
-    "/inference-results",
+    "/api/inference-results",
     StaticFiles(directory=INFER_DIR),
     name="inference-results",
 )

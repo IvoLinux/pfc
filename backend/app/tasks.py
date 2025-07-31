@@ -125,6 +125,7 @@ def run_job(job_id: str):
                 ds_path,
                 OUT_ROOT,
                 progress_cb,
+                inference_id=job.id
             )
             job.result_path = res
             # job.result_path = None

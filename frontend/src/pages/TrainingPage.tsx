@@ -58,8 +58,8 @@ export default function TrainingPage() {
                   <InputLabel>Família de Modelos</InputLabel>
                   <Select value={kind} label="Família de Modelos"
                           onChange={e => setKind(e.target.value as any)}>
-                    <MenuItem value="tabular">Tabular (Random Forest)</MenuItem>
-                    <MenuItem value="llm">LLM (DistilBERT)</MenuItem>
+                    {/* <MenuItem value="tabular">Tabular (Random Forest)</MenuItem> */}
+                    <MenuItem value="llm">LLM</MenuItem>
                   </Select>
                 </FormControl>
 

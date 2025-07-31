@@ -72,7 +72,7 @@ export default function InferencePage() {
               <InputLabel>Família de Modelo</ InputLabel>
               <Select value={kind} label="Família de Modelo"
                       onChange={e => { setKind(e.target.value as any); setCheckpoint(''); }}>
-                <MenuItem value="tabular">Tabular</MenuItem>
+                {/* <MenuItem value="tabular">Tabular</MenuItem> */}
                 <MenuItem value="llm">LLM</MenuItem>
               </Select>
             </FormControl>

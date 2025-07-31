@@ -10,6 +10,7 @@ interface InferenceResult {
   metrics: Record<string, number>;
   confusion_matrix: number[][];
   predictions?: string[];
+  images: string[];
 }
 
 export default function ResultsPage() {
@@ -46,8 +47,6 @@ export default function ResultsPage() {
 
   if (!results) return null;
 
-  const classCount = results.confusion_matrix.length;
-
   return (
     <Box>
       <Box display="flex" alignItems="center" mb={3}>
@@ -75,37 +74,14 @@ export default function ResultsPage() {
 
         <Grid item xs={12} md={6}>
           <Typography variant="h5" gutterBottom>Matriz de Confusão</Typography>
-          <Paper sx={{ p: 2, overflow: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-              <thead>
-                <tr>
-                  <th style={{ border: '1px solid #ddd', padding: 8 }}></th>
-                  {Array.from({ length: classCount }).map((_, j) => (
-                    <th key={j} style={{ border: '1px solid #ddd', padding: 8 }}>
-                      Pred {j}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {results.confusion_matrix.map((row, i) => (
-                  <tr key={i}>
-                    <td style={{ border: '1px solid #ddd', padding: 8, fontWeight: 'bold' }}>
-                      Actual {i}
-                    </td>
-                    {row.map((cell, j) => (
-                      <td key={j}
-                        style={{
-                          border: '1px solid #ddd', padding: 8, textAlign: 'center',
-                          backgroundColor: cell === Math.max(...row) ? '#e8f5e9' : '#fff'
-                        }}>
-                        {cell}
-                      </td>
-                    ))}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <Paper sx={{ p: 2, textAlign: 'center' }}>
+            {results.images.length > 0 && (
+              <img
+                src={`/api/inference-results/${jobId}/${results.images[0]}`}
+                alt="Confusion Matrix"
+                style={{ maxWidth: '100%' }}
+              />
+            )}
           </Paper>
         </Grid>
       </Grid>

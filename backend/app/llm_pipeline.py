@@ -305,6 +305,7 @@ def infer_llm(
     dataset_path: str,
     output_root: str,
     update_progress_cb=None,
+    inference_id: str = None,
 ) -> tuple[dict, list[list[int]], str]:
     """
     Load the finetuned model from `ckpt_path`, run inference on
@@ -422,14 +423,14 @@ def infer_llm(
 
     cm = confusion_matrix(y_true, y_pred, labels=LABELS).tolist()
  
-    # 5) prepare output dir
-    job_id = os.path.basename(os.path.dirname(ckpt_path))
-    out_dir = os.path.join(output_root, "inference", job_id)
+    # 5) prepare output dir: use inference-job ID (fallback to training-job ID)
+    inf_job_id = inference_id or os.path.basename(os.path.dirname(ckpt_path))
+    out_dir = os.path.join(output_root, "inference", inf_job_id)
     os.makedirs(out_dir, exist_ok=True)
 
     # save raw preds
     with open(os.path.join(out_dir, "raw_predictions.txt"), "w") as f:
-        for i,(t,p) in enumerate(zip(y_true,y_pred)):
+        for i,(t,p) in enumerate(zip(true,y_pred)):
             f.write(f"{i}: {t} → {p}\n")
 
     # save summary
