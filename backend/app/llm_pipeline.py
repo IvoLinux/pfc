@@ -40,17 +40,20 @@ class FineTuner:
         update_progress_cb: Callable[[Dict], None],
         num_epochs: int,
         max_length: int,
+        batch_size: int,
+        learning_rate: float,
+        weight_decay: float,
+        warmup_ratio: float,
     ):
-        # settings (keep your old constants here or parameterize later)
         self.csv_path      = csv_path
         self.model_name    = model_name
         self.output_root   = output_root
         self.num_epochs    = num_epochs
         self.max_length    = max_length
-        self.batch_size    = 8
-        self.learning_rate = 3e-5
-        self.weight_decay  = 0.01
-        self.warmup_ratio  = 0.05
+        self.batch_size    = batch_size
+        self.learning_rate = learning_rate
+        self.weight_decay  = weight_decay
+        self.warmup_ratio  = warmup_ratio
         self.seed          = 21023 + 21041
 
         # checkpoint & log dirs
@@ -230,6 +233,14 @@ class FineTuner:
                 "batches_done":          batches_done,
                 "total_steps":           self.total_steps,
                 "warmup_steps":          self.warmup_steps,
+                "hyperparameters": {
+                    "num_epochs":    self.num_epochs,
+                    "max_length":    self.max_length,
+                    "batch_size":    self.batch_size,
+                    "learning_rate": self.learning_rate,
+                    "weight_decay":  self.weight_decay,
+                    "warmup_ratio":  self.warmup_ratio,
+                },
             }, path)
 
             with open(self.log_file, "a") as log:
@@ -255,8 +266,13 @@ def fine_tune_llm(
     model_name: str,
     output_root: str,
     update_progress_cb: Callable[[Dict], None] = None,
+    *,
     num_epochs: int = 1,
-    max_length: int = 256,
+    max_length: int = 512,
+    batch_size: int = 8,
+    learning_rate: float = 3e-5,
+    weight_decay:  float = 0.01,
+    warmup_ratio:  float = 0.05,
 ) -> Tuple[str, Dict[str, float], List[List[int]]]:
     """
     Trains a HuggingFace model on a CSV
@@ -271,6 +287,10 @@ def fine_tune_llm(
         update_progress_cb=update_progress_cb,
         num_epochs=num_epochs,
         max_length=max_length,
+        batch_size    = batch_size,
+        learning_rate = learning_rate,
+        weight_decay  = weight_decay,
+        warmup_ratio  = warmup_ratio,
     )
     _active_tuners[job_id] = tuner
 
@@ -329,12 +349,12 @@ def infer_llm(
 
     # 1) load tokenizer + model
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+    ckpt = torch.load(ckpt_path, map_location=device)
+    LABELS = ckpt.get("labels", CANDIDATE_LABELS)
     model = AutoModelForSequenceClassification.from_pretrained(
         MODEL_NAME,
         num_labels=len(LABELS),
     ).to(device)
-    ckpt = torch.load(ckpt_path, map_location=device)
-    LABELS = ckpt.get("labels", CANDIDATE_LABELS)
     model.load_state_dict(ckpt["model_state_dict"])
     model.eval()
 

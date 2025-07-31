@@ -13,6 +13,15 @@ export default function TrainingPage() {
   const [modelName, setModelName] = useState('distilbert-base-uncased');
   const [dataset, setDataset] = useState('');
   const [datasets, setDatasets] = useState<Dataset[]>([]);
+  const [numEpochs,  setNumEpochs]  = useState(1);
+  // const [maxLength,  setMaxLength]  = useState(256);
+  const [batchSize,  setBatchSize]  = useState(8);
+  const [learningRate, setLearningRate] = useState(3e-5);
+  const [weightDecay,  setWeightDecay]  = useState(0.01);
+  // const [warmupRatio,  setWarmupRatio]  = useState(0.05);
+
+
+
   const [loading, setLoading] = useState(false);
   const [msg, setMsg] = useState<{ ok:boolean; text:string } | null>(null);
 
@@ -29,7 +38,13 @@ export default function TrainingPage() {
       body: JSON.stringify({
         kind,
         ...(kind === 'llm' && { model_name: modelName }),
-        dataset_filename: dataset
+        dataset_filename: dataset,
+        num_epochs:   numEpochs,
+        // max_length:   maxLength,
+        batch_size:   batchSize,
+        learning_rate: learningRate,
+        weight_decay:  weightDecay,
+        // warmup_ratio:  warmupRatio,
       })
     });
     setLoading(false);
@@ -63,15 +78,15 @@ export default function TrainingPage() {
                   </Select>
                 </FormControl>
 
-                {kind === 'llm' && (
-                  <TextField
-                    label="Nome do Modelo"
-                    value={modelName}
-                    onChange={e => setModelName(e.target.value)}
-                    required
-                    fullWidth
-                  />
-                )}
+                {kind === 'llm' && ( <>
+                  <TextField label="Nome do Modelo" value={modelName} onChange={e => setModelName(e.target.value)} required fullWidth />
+                  <TextField label="Epochs" type="number" fullWidth value={numEpochs} onChange={e => setNumEpochs(Math.max(1, +e.target.value))} />
+                  {/* <TextField label="Max token length" type="number" fullWidth value={maxLength} onChange={e => setMaxLength(+e.target.value)} /> */}
+                  <TextField label="Batch size" type="number" fullWidth value={batchSize} onChange={e => setBatchSize(+e.target.value)} />
+                  <TextField label="Learning rate" type="number" fullWidth value={learningRate} onChange={e => setLearningRate(+e.target.value)} />
+                  <TextField label="Weight decay" type="number" fullWidth value={weightDecay} onChange={e => setWeightDecay(+e.target.value)} />
+                  {/* <TextField label="Warmup ratio" type="number" fullWidth value={warmupRatio} onChange={e => setWarmupRatio(+e.target.value)} /> */}
+                </>)}
 
                 <FormControl fullWidth required>
                   <InputLabel>Conjunto de Dados</InputLabel>

@@ -9,6 +9,12 @@ class JobCreateTrain(BaseModel):
     kind: str                   # "tabular" | "llm"
     model_name: str
     dataset_filename: str
+    num_epochs:    int = 1
+    max_length:    int = 512
+    batch_size:    int = 8
+    learning_rate: float = 3e-5
+    weight_decay:  float = 0.01
+    warmup_ratio:  float = 0.05
 
 
 class JobCreateInfer(BaseModel):

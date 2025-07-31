@@ -53,17 +53,21 @@ def get_db():
 #                               JOB ENDPOINTS                                 #
 # --------------------------------------------------------------------------- #
 @app.post("/api/jobs/train", response_model=JobStatus)
-# def create_train_job(payload: JobCreateTrain, background_tasks: BackgroundTasks):
 def create_train_job(payload: JobCreateTrain):
     """
     payload.kind  →  "tabular" | "llm"
     """
     job_id = payload.model_name + '_' + str(uuid4())
+    payload_dict = payload.model_dump()
+    hyper_p_names = ("num_epochs","batch_size", "learning_rate","weight_decay",
+                    #  "warmup_ratio"
+                     )
     job = Job(
         id=job_id,
         kind=f"{payload.kind}_train",
         model_name=payload.model_name,
         dataset_filename=payload.dataset_filename,
+        hyperparameters={k: payload_dict[k] for k in hyper_p_names},
         status="QUEUED",
         progress=0,
     )

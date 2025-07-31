@@ -26,6 +26,7 @@ class Job(Base):
     checkpoint_filename = Column(String, nullable=True)   # tabular  ➜  *.joblib
     checkpoint_dir = Column(String, nullable=True)        # llm      ➜  folder name
     result_path = Column(String, nullable=True)           # JSON produced by inference
+    hyperparameters = Column(MutableDict.as_mutable(JSON), nullable=True, default=dict)
 
     # live status
     status = Column(String, default="QUEUED")     # QUEUED|RUNNING|COMPLETED|FAILED

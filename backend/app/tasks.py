@@ -114,8 +114,9 @@ def run_job(job_id: str):
 
         # ----------------------------------------------------------- LLM -----
         elif job.kind == "llm_train":
+            hp = job.hyperparameters or {}
             ckpt, metrics, cm = fine_tune_llm(
-                job.id, ds_path, job.model_name, OUT_ROOT, progress_cb
+                job.id, ds_path, job.model_name, OUT_ROOT, progress_cb, **hp
             )
             job.result_path = ckpt
 

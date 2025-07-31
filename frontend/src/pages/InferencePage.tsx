@@ -72,15 +72,14 @@ export default function InferencePage() {
               <InputLabel>Família de Modelo</ InputLabel>
               <Select value={kind} label="Família de Modelo"
                       onChange={e => { setKind(e.target.value as any); setCheckpoint(''); }}>
-                {/* <MenuItem value="tabular">Tabular</MenuItem> */}
+                {/* <MenuItem value="tabular">Tabular</MenuItem>w */}
                 <MenuItem value="llm">LLM</MenuItem>
               </Select>
             </FormControl>
 
             <FormControl fullWidth required>
               <InputLabel>Checkpoint</InputLabel>
-              <Select value={checkpoint} label="Checkpoint"
-                      onChange={e => setCheckpoint(e.target.value)}>
+              <Select value={checkpoint} label="Checkpoint" onChange={e => setCheckpoint(e.target.value)}>
                 {modelsOfKind.map(m => (
                   <MenuItem key={m.filename} value={m.filename}>{m.display_name}</MenuItem>
                 ))}
