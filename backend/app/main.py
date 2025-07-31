@@ -14,9 +14,6 @@ from .schemas import JobCreateTrain, JobCreateInfer, JobStatus, InferenceResult
 from .tasks import run_job
 from .llm_pipeline import save_checkpoint_llm, stop_training_llm
 
-# --------------------------------------------------------------------------- #
-#                            FASTAPI  BOOTSTRAP                               #
-# --------------------------------------------------------------------------- #
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI()

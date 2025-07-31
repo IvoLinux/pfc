@@ -24,10 +24,10 @@ from sklearn.exceptions import UndefinedMetricWarning
 
 # hard‑coded for now
 CANDIDATE_LABELS = [
-    # "Benign", "Botnet", "Brute_Force_Attack",
-    # "DoS_Attack", "Port_Scan_Infiltration",
-    # "Web_Attack", "Other"
-    "Benign", "Anomaly"
+    "Benign", "Botnet", "Brute_Force_Attack",
+    "DoS_Attack", "Port_Scan_Infiltration",
+    "Web_Attack", "Other"
+    # "Benign", "Anomaly"
 ]
 
 
@@ -361,7 +361,7 @@ def infer_llm(
     # 2) read CSV & normalize to canonical LABELS
     rows = list(csv.DictReader(open(dataset_path)))
     texts, true = [], []
-    # # build mapping from uppercase → canonical label
+    # build mapping from uppercase → canonical label
     label_map = {lbl.upper(): lbl for lbl in LABELS}
 
     for r in rows:
@@ -430,7 +430,8 @@ def infer_llm(
         report = classification_report(
             y_true,
             y_pred,
-            labels=LABELS,
+            # labels=LABELS,
+            labels=["Benign","Anomaly"],
             digits=4,
             zero_division=0,
         )
@@ -441,7 +442,8 @@ def infer_llm(
         "f1_score":  float(round(f1[1], 4)),
     }
 
-    cm = confusion_matrix(y_true, y_pred, labels=LABELS).tolist()
+    # cm = confusion_matrix(y_true, y_pred, labels=LABELS).tolist()
+    cm = confusion_matrix(y_true, y_pred, labels=["Benign","Anomaly"]).tolist()
  
     # 5) prepare output dir: use inference-job ID (fallback to training-job ID)
     inf_job_id = inference_id or os.path.basename(os.path.dirname(ckpt_path))
@@ -450,7 +452,7 @@ def infer_llm(
 
     # save raw preds
     with open(os.path.join(out_dir, "raw_predictions.txt"), "w") as f:
-        for i,(t,p) in enumerate(zip(true,y_pred)):
+        for i,(t,p) in enumerate(zip(y_true,y_pred)):
             f.write(f"{i}: {t} → {p}\n")
 
     # save summary
@@ -473,7 +475,8 @@ def infer_llm(
     # plot confusion matrix with class names + cell counts
     plot_confusion_matrix(
         np.array(cm),
-        LABELS,
+        # LABELS,
+        ["Benign","Anomaly"],
         os.path.join(out_dir, "confusion_matrix.png"),
     )
     
