@@ -206,14 +206,15 @@ def parse_flow_window(
     - tz: e.g., 'UTC' or 'America/Toronto'. If None, treat as naive UTC.
     """
     # Robust parse with pandas
-    ts = pd.to_datetime(ts_str, errors="coerce", utc=(tz is None))
-    if ts is pd.NaT:
-        # Try common formats if needed (fallback)
-        raise ValueError(f"Unparseable Timestamp: {ts_str}")
-
-    if tz is not None:
-        # localize-naive then convert to UTC
-        ts = pd.to_datetime(ts_str).tz_localize(tz).tz_convert("UTC")
+    if tz is None:
+        # Treat the CSV timestamp as UTC
+        ts = pd.to_datetime(ts_str, errors="coerce", utc=True, dayfirst=True)
+    else:
+        # Treat CSV timestamp as **local** in the provided tz, then convert to UTC
+        ts_local = pd.to_datetime(ts_str, errors="coerce", dayfirst=True)
+        if ts_local is pd.NaT:
+            raise ValueError(f"Unparseable Timestamp: {ts_str}")
+        ts = ts_local.tz_localize(tz).tz_convert("UTC")
 
     start_epoch = ts.value / 1e9  # ns -> s
 
@@ -227,6 +228,20 @@ def parse_flow_window(
 
     end_epoch = start_epoch + dt_seconds
     return start_epoch, end_epoch
+
+def print_db_time_range(con: sqlite3.Connection, label: str = "DB"):
+    cur = con.cursor()
+    cur.execute("SELECT MIN(ts), MAX(ts), COUNT(*) FROM packets")
+    row = cur.fetchone()
+    if row and row[0] is not None:
+        ts_min, ts_max, n = row
+        # Render in UTC for clarity
+        hmin = pd.to_datetime(ts_min, unit="s", utc=True)
+        hmax = pd.to_datetime(ts_max, unit="s", utc=True)
+        print(f"[i] {label} packets: {n} rows")
+        print(f"[i] {label} ts range (UTC): {hmin} .. {hmax}")
+    else:
+        print(f"[i] {label}: no rows")
 
 # ----------------------- Dataset builder -----------------------
 
@@ -245,7 +260,15 @@ def build_dataset_from_windows(
     """
     For each flow row, query [start, end] and emit a single textual sample + label.
     """
-    df = pd.read_csv(flows_csv)
+    df = pd.read_csv(flows_csv, low_memory=False, dtype=str)
+    df[dur_col] = pd.to_numeric(df[dur_col], errors="coerce")
+    
+    sample = df.iloc[0]
+    print("Sample ts (raw):", sample[ts_col])
+    print("Sample dur (raw):", sample[dur_col])
+    s_ep, e_ep = parse_flow_window(sample[ts_col], df.loc[df.index[0], dur_col], duration_unit=duration_unit, tz=tz)
+    print("Sample window (UTC epoch):", s_ep, e_ep)
+    print("Sample window (UTC human):", pd.to_datetime([s_ep, e_ep], unit="s", utc=True).tolist())
 
     required = [ts_col, dur_col, label_col]
     missing = [c for c in required if c not in df.columns]
@@ -314,7 +337,8 @@ def main():
     ap.add_argument("--dur-col", default="Flow Duration", help="Flow duration column in flows CSV.")
     ap.add_argument("--label-col", default="Label", help="Label column in flows CSV.")
     ap.add_argument("--duration-unit", choices=["us", "ms", "s"], default="us", help="Unit of Flow Duration.")
-    ap.add_argument("--tz", default=None, help="Timezone of the CSV timestamps (e.g., 'UTC'). If omitted, treat as UTC.")
+    # ap.add_argument("--tz", default=None, help="Timezone of the CSV timestamps (e.g., 'UTC'). If omitted, treat as UTC.")
+    ap.add_argument("--tz", default="America/Moncton", help="Timezone of the CSV timestamps (e.g., 'UTC'). If omitted, treat as UTC.")
     # ap.add_argument("--limit-rows", type=int, default=None, help="Limit number of flow rows for a quick run.")
     ap.add_argument("--limit-rows", type=int, default=10, help="Limit number of flow rows for a quick run.")
     ap.add_argument("--skip-index", action="store_true", help="Assume DB already exists and skip re-indexing the PCAP.")
@@ -331,6 +355,7 @@ def main():
     else:
         print(f"[+] Skipping index build; using existing DB: {db_path}", file=sys.stderr)
 
+    print_db_time_range(con, label="SQLite")
     print(f"[+] Building dataset to {args.out} ...", file=sys.stderr)
     build_dataset_from_windows(
         con=con,
