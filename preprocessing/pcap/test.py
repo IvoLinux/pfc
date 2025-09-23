@@ -25,10 +25,12 @@ py make_ds.py \
 
 import argparse, csv, os, sys, sqlite3, hashlib
 from typing import Optional, Tuple, List
+from datetime import datetime
 
 import dpkt
 import pandas as pd
 import time
+import struct
 
 # ----------------------- Header parsing -----------------------
 
@@ -173,6 +175,24 @@ def parse_packet(buf: bytes, ts: float):
     # Shouldn’t get here
     return None, None
 
+_PCAP_MAGICS = {
+    b"\xd4\xc3\xb2\xa1",  # PCAP little-endian, microsecond
+    b"\xa1\xb2\xc3\xd4",  # PCAP big-endian, microsecond
+    b"\x4d\x3c\xb2\xa1",  # PCAP little-endian, nanosecond
+    b"\xa1\xb2\x3c\x4d",  # PCAP big-endian, nanosecond
+}
+_PCAPNG_MAGIC = b"\x0a\x0d\x0d\x0a"
+
+def _looks_like_pcap_or_pcapng(path: str) -> bool:
+    try:
+        with open(path, "rb") as f:
+            head = f.read(4)
+        if not head or len(head) < 4:
+            return False
+        return (head in _PCAP_MAGICS) or (head == _PCAPNG_MAGIC)
+    except Exception:
+        return False
+
 # ----------------------- SQLite -----------------------
 
 def ensure_db(db_path: str):
@@ -207,11 +227,46 @@ def ensure_db(db_path: str):
         )
     """)
     cur.execute("CREATE INDEX IF NOT EXISTS idx_packets_ts ON packets(ts)")
-    # Optional useful indexes you can uncomment later:
-    # cur.execute("CREATE INDEX IF NOT EXISTS idx_packets_src ON packets(src)")
-    # cur.execute("CREATE INDEX IF NOT EXISTS idx_packets_dst ON packets(dst)")
+
+    # NEW: track which files were ingested (path + size + mtime as the signature)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS ingested_files (
+            path        TEXT PRIMARY KEY,
+            size_bytes  INTEGER NOT NULL,
+            mtime_ns    INTEGER NOT NULL,
+            inserted    INTEGER NOT NULL,
+            first_ts    REAL,
+            last_ts     REAL,
+            ingested_at TEXT NOT NULL
+        )
+    """)
     con.commit()
     return con
+
+def _file_signature(path: str):
+    st = os.stat(path)
+    return (os.path.abspath(path), int(st.st_size), int(st.st_mtime_ns))
+
+def already_ingested(con: sqlite3.Connection, path: str) -> Optional[tuple]:
+    cur = con.cursor()
+    cur.execute("SELECT size_bytes, mtime_ns FROM ingested_files WHERE path = ?", (os.path.abspath(path),))
+    return cur.fetchone()  # (size_bytes, mtime_ns) or None
+
+def mark_ingested(con: sqlite3.Connection, path: str, size_bytes: int, mtime_ns: int,
+                  inserted: int, first_ts: Optional[float], last_ts: Optional[float]):
+    cur = con.cursor()
+    cur.execute("""
+        INSERT INTO ingested_files (path, size_bytes, mtime_ns, inserted, first_ts, last_ts, ingested_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(path) DO UPDATE SET
+            size_bytes=excluded.size_bytes,
+            mtime_ns=excluded.mtime_ns,
+            inserted=excluded.inserted,
+            first_ts=excluded.first_ts,
+            last_ts=excluded.last_ts,
+            ingested_at=excluded.ingested_at
+    """, (os.path.abspath(path), size_bytes, mtime_ns, inserted, first_ts, last_ts, datetime.utcnow().isoformat() + "Z"))
+    con.commit()
 
 def insert_rows(cur, rows):
     cur.executemany("""
@@ -225,37 +280,96 @@ def insert_rows(cur, rows):
 def index_one_pcap(pcap_path: str, con: sqlite3.Connection, batch_size: int = 5000):
     cur = con.cursor()
     batch = []; inserted = 0
+    first_ts = None
+    last_ts = None
+
     with open(pcap_path, "rb") as f:
+        # Try PCAP then PCAPNG
         try:
             reader = dpkt.pcap.Reader(f)
         except (ValueError, dpkt.dpkt.NeedData):
-            f.seek(0); reader = dpkt.pcapng.Reader(f)
-        for ts, buf in reader:
-            fields, header = parse_packet(buf, ts)
-            if header is None:  # unparseable
-                continue
-            row = (
-                fields["ts"], fields["l2"], fields["ip_version"], fields["src"], fields["dst"],
-                fields["ttl"], fields["ip_len"], fields["ip_proto"], fields["hlim"], fields["plen"], fields["nxt"],
-                fields["l4"], fields["sport"], fields["dport"], fields["tcp_flags"], fields["tcp_win"],
-                fields["tcp_optlen"], fields["tcp_hdrlen"], fields["udp_ulen"], fields["icmp_type"], fields["icmp_code"],
-                fields["icmp6_type"], fields["icmp6_code"], header
-            )
-            batch.append(row)
-            if len(batch) >= batch_size:
-                insert_rows(cur, batch); con.commit(); inserted += len(batch); batch.clear()
+            f.seek(0)
+            try:
+                reader = dpkt.pcapng.Reader(f)
+            except (ValueError, dpkt.dpkt.NeedData) as e:
+                raise ValueError(f"invalid pcap/pcapng: {pcap_path}") from e
+
+        try:
+            for rec in reader:
+                try:
+                    ts, buf = rec
+                except Exception:
+                    continue  # ignore non-packet sections in pcapng
+                try:
+                    fields, header = parse_packet(buf, ts)
+                except Exception:
+                    continue
+
+                if header is None:
+                    continue
+
+                if first_ts is None: first_ts = float(ts)
+                last_ts = float(ts)
+
+                row = (
+                    fields["ts"], fields["l2"], fields["ip_version"], fields["src"], fields["dst"],
+                    fields["ttl"], fields["ip_len"], fields["ip_proto"], fields["hlim"], fields["plen"], fields["nxt"],
+                    fields["l4"], fields["sport"], fields["dport"], fields["tcp_flags"], fields["tcp_win"],
+                    fields["tcp_optlen"], fields["tcp_hdrlen"], fields["udp_ulen"], fields["icmp_type"], fields["icmp_code"],
+                    fields["icmp6_type"], fields["icmp6_code"], header
+                )
+                batch.append(row)
+                if len(batch) >= batch_size:
+                    insert_rows(cur, batch); con.commit(); inserted += len(batch); batch.clear()
+
+        except dpkt.dpkt.NeedData:
+            print(f"[!] Truncated capture (NeedData): {pcap_path}", file=sys.stderr)
+        except struct.error as e:
+            print(f"[!] Corrupt record (struct.error) in {pcap_path}: {e}", file=sys.stderr)
+        except Exception as e:
+            print(f"[!] Error while reading {pcap_path}: {e.__class__.__name__}: {e}", file=sys.stderr)
+
     if batch:
         insert_rows(cur, batch); con.commit(); inserted += len(batch)
-    return inserted
+    return inserted, first_ts, last_ts
 
-def index_dir(pcap_dir: str, con: sqlite3.Connection, batch_size: int = 5000, exts=(".pcap",".pcapng",".cap")):
+def index_dir(pcap_dir: str, con: sqlite3.Connection, batch_size: int = 5000, exts=(".pcap",".pcapng",".cap"), reindex: bool=False):
     total = 0
+    SKIP_EXTS = {".sqlite", ".db", ".csv", ".parquet", ".json", ".txt", ".log"}
     for root, _, files in os.walk(pcap_dir):
         for name in files:
-            # if name.lower().endswith(exts):
             path = os.path.join(root, name)
-            print(f"[+] Indexing {path}", file=sys.stderr)
-            total += index_one_pcap(path, con, batch_size)
+            lower = name.lower()
+            _, ext = os.path.splitext(lower)
+            if ext in SKIP_EXTS:
+                continue
+
+            # Allow by extension or by magic sniff
+            allow = (exts is not None and lower.endswith(exts)) or _looks_like_pcap_or_pcapng(path)
+            if not allow:
+                continue
+
+            # Skip if already ingested with same signature (unless --reindex)
+            try:
+                abspath, size_bytes, mtime_ns = _file_signature(path)
+                prev = already_ingested(con, abspath)
+                if prev and not reindex:
+                    prev_size, prev_mtime_ns = prev
+                    if prev_size == size_bytes and prev_mtime_ns == mtime_ns:
+                        print(f"[i] Skipping (already ingested, unchanged): {path}", file=sys.stderr)
+                        continue
+            except Exception as e:
+                print(f"[!] Could not stat {path}: {e}", file=sys.stderr)
+
+            try:
+                print(f"[+] Indexing {path}", file=sys.stderr)
+                inserted, first_ts, last_ts = index_one_pcap(path, con, batch_size)
+                # Record ingestion signature (even if 0 packets parsed)
+                mark_ingested(con, abspath, size_bytes, mtime_ns, inserted, first_ts, last_ts)
+                total += inserted
+            except Exception as e:
+                print(f"[!] Skipping {path}: {e.__class__.__name__}: {e}", file=sys.stderr)
+                continue
     return total
 
 def db_time_range(con: sqlite3.Connection):
