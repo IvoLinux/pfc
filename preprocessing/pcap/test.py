@@ -282,6 +282,20 @@ def parse_flow_window(ts_str: str, duration_value: float, duration_unit: str="us
     else:                       dt = float(duration_value)
     return start, start + dt
 
+def _parse_start_ts(ts_str: str, tz: Optional[str]) -> float:
+    """
+    Parse the CSV timestamp and return UTC epoch seconds (float), matching
+    the timezone handling used elsewhere.
+    """
+    if tz is None:
+        ts = pd.to_datetime(ts_str, errors="coerce", utc=True, dayfirst=True)
+    else:
+        ts_local = pd.to_datetime(ts_str, errors="coerce", dayfirst=True)
+        if pd.isna(ts_local):
+            raise ValueError(f"Unparseable Timestamp: {ts_str}")
+        ts = ts_local.tz_localize(tz).tz_convert("UTC")
+    return ts.value / 1e9
+
 def print_db_time_range(con: sqlite3.Connection, label: str = "DB"):
     tmin, tmax, n = db_time_range(con)
     if n:
@@ -296,7 +310,8 @@ def build_dataset_from_windows(
     con: sqlite3.Connection, flows_csv: str, out_csv: str,
     ts_col="Timestamp", dur_col="Flow Duration", label_col="Label",
     duration_unit="us", tz: Optional[str]=None,
-    limit_rows: Optional[int]=None, dedup_identical_windows: bool=False
+    limit_rows: Optional[int]=None, dedup_identical_windows: bool=False,
+    pkt_window: int = 0,
 ):
     df = pd.read_csv(flows_csv, low_memory=False, dtype=str)
     df[dur_col] = pd.to_numeric(df[dur_col], errors="coerce")
@@ -308,10 +323,15 @@ def build_dataset_from_windows(
 
     # Quick sanity
     sample = df.iloc[0]
-    s_ep, e_ep = parse_flow_window(sample[ts_col], df.loc[df.index[0], dur_col], duration_unit=duration_unit, tz=tz)
-    print("Sample ts (raw):", sample[ts_col], file=sys.stderr)
-    print("Sample dur (raw):", sample[dur_col], file=sys.stderr)
-    print("Sample window (UTC):", pd.to_datetime([s_ep, e_ep], unit="s", utc=True).tolist(), file=sys.stderr)
+    if pkt_window and pkt_window > 0:
+        s_ep = _parse_start_ts(sample[ts_col], tz)
+        print("Sample ts (raw):", sample[ts_col], file=sys.stderr)
+        print(f"Sample packet window: start={pd.to_datetime(s_ep, unit='s', utc=True)} size={pkt_window}", file=sys.stderr)
+    else:
+        s_ep, e_ep = parse_flow_window(sample[ts_col], df.loc[df.index[0], dur_col], duration_unit=duration_unit, tz=tz)
+        print("Sample ts (raw):", sample[ts_col], file=sys.stderr)
+        print("Sample dur (raw):", sample[dur_col], file=sys.stderr)
+        print("Sample window (UTC):", pd.to_datetime([s_ep, e_ep], unit="s", utc=True).tolist(), file=sys.stderr)
 
     os.makedirs(os.path.dirname(os.path.abspath(out_csv)) or ".", exist_ok=True)
     with open(out_csv, "w", newline="", encoding="utf-8") as out_f:
@@ -323,18 +343,37 @@ def build_dataset_from_windows(
         nrows = len(df) if limit_rows is None else min(limit_rows, len(df))
         for i in range(nrows):
             row = df.iloc[i]
-            try:
-                start_ts, end_ts = parse_flow_window(str(row[ts_col]), row[dur_col], duration_unit=duration_unit, tz=tz)
-            except Exception:
-                continue
 
-            cur.execute("SELECT header FROM packets WHERE ts >= ? AND ts <= ? ORDER BY ts ASC", (start_ts, end_ts))
-            headers = [h for (h,) in cur.fetchall()]
+            if pkt_window and pkt_window > 0:
+                try:
+                    start_ts = _parse_start_ts(str(row[ts_col]), tz)
+                except Exception:
+                    continue
+
+                cur.execute(
+                    "SELECT header FROM packets WHERE ts >= ? ORDER BY ts ASC LIMIT ?",
+                    (start_ts, pkt_window)
+                )
+                headers = [h for (h,) in cur.fetchall()]
+
+            else:
+                try:
+                    start_ts, end_ts = parse_flow_window(str(row[ts_col]), row[dur_col], duration_unit=duration_unit, tz=tz)
+                except Exception:
+                    continue
+
+                cur.execute(
+                    "SELECT header FROM packets WHERE ts >= ? AND ts <= ? ORDER BY ts ASC",
+                    (start_ts, end_ts)
+                )
+                headers = [h for (h,) in cur.fetchall()]
+
             window_text = "\n".join(headers) if headers else ""
 
             if dedup_identical_windows and window_text:
                 h = hashlib.sha256(window_text.encode("utf-8")).hexdigest()
-                if h in seen: continue
+                if h in seen:
+                    continue
                 seen.add(h)
 
             writer.writerow({"Text": window_text, "Label": row[label_col]})
@@ -355,9 +394,10 @@ def main():
     ap.add_argument("--label-col", default="Label")
     ap.add_argument("--duration-unit", choices=["us","ms","s"], default="us")
     ap.add_argument("--tz", default="America/Moncton", help="Timezone of CSV timestamps (e.g., Atlantic for CICIDS2018)")
-    ap.add_argument("--limit-rows", type=int, default=50)
+    ap.add_argument("--limit-rows", type=int, default=100)
     ap.add_argument("--skip-index", action="store_true")
     ap.add_argument("--dedup-windows", action="store_true")
+    ap.add_argument("--pkt-window", type=int, default=100, help="If > 0, build each example from the next N packet headers starting at the row's timestamp (overrides duration-based windows).")
     args = ap.parse_args()
 
     # Choose DB path
@@ -387,7 +427,8 @@ def main():
         con, args.flows, args.out,
         ts_col=args.ts_col, dur_col=args.dur_col, label_col=args.label_col,
         duration_unit=args.duration_unit, tz=args.tz,
-        limit_rows=args.limit_rows, dedup_identical_windows=args.dedup_windows
+        limit_rows=args.limit_rows, dedup_identical_windows=args.dedup_windows,
+        pkt_window=args.pkt_window
     )
     print("[+] Done.", file=sys.stderr)
 
