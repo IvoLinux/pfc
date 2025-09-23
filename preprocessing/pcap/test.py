@@ -28,6 +28,7 @@ from typing import Optional, Tuple, List
 
 import dpkt
 import pandas as pd
+import time
 
 # ----------------------- Header parsing -----------------------
 
@@ -251,10 +252,10 @@ def index_dir(pcap_dir: str, con: sqlite3.Connection, batch_size: int = 5000, ex
     total = 0
     for root, _, files in os.walk(pcap_dir):
         for name in files:
-            if name.lower().endswith(exts):
-                path = os.path.join(root, name)
-                print(f"[+] Indexing {path}", file=sys.stderr)
-                total += index_one_pcap(path, con, batch_size)
+            # if name.lower().endswith(exts):
+            path = os.path.join(root, name)
+            print(f"[+] Indexing {path}", file=sys.stderr)
+            total += index_one_pcap(path, con, batch_size)
     return total
 
 def db_time_range(con: sqlite3.Connection):
@@ -351,7 +352,7 @@ def build_dataset_from_windows(
                     continue
 
                 cur.execute(
-                    "SELECT header FROM packets WHERE ts >= ? ORDER BY ts ASC LIMIT ?",
+                    "SELECT header FROM packets WHERE ts >= ? AND ip_version IS NOT NULL ORDER BY ts ASC LIMIT ?",
                     (start_ts, pkt_window)
                 )
                 headers = [h for (h,) in cur.fetchall()]
@@ -363,7 +364,7 @@ def build_dataset_from_windows(
                     continue
 
                 cur.execute(
-                    "SELECT header FROM packets WHERE ts >= ? AND ts <= ? ORDER BY ts ASC",
+                    "SELECT header FROM packets WHERE ts >= ? AND ts <= ? AND ip_version IS NOT NULL ORDER BY ts ASC",
                     (start_ts, end_ts)
                 )
                 headers = [h for (h,) in cur.fetchall()]
