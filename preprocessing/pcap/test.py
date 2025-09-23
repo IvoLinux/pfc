@@ -1,373 +1,393 @@
+#!/usr/bin/env python3
 """
-Build an artificial LLM-friendly dataset from raw PCAP(s) + CICFlowMeter CSV.
+PCAP → SQLite (headers only) → CSV windows (Text,Label) for CICFlowMeter rows.
 
-Inputs:
-  - One PCAP file (for now).
-  - CICFlowMeter CSV (must have 'Timestamp', 'Flow Duration', 'Label' columns).
+- DB stores "true" header state: structured L2/L3/L4 fields + a canonical header text.
+- No payloads are stored.
+- You can later change text rendering/masking without re-indexing.
 
-Output:
-  - CSV with columns: Text, Label
-    where Text = newline-separated header lines for all packets within the
-    [Timestamp, Timestamp + FlowDuration] window.
+Usage examples:
 
-Notes:
-  - We store packet headers in a local SQLite DB (ts REAL, header TEXT) with an index on ts.
-  - Flow Duration unit in CICFlowMeter is typically microseconds (µs). You can override.
-  - Timestamp parsing tries ISO-like formats automatically (pandas) and assumes naive UTC
-    unless you pass a timezone.
+# Single file
+py make_ds.py \
+  --pcap ~/Desktop/RAW/DoS-02-16/pcap/capDESKTOP-AN3U28N-172.31.64.17 \
+  --flows ~/Desktop/RAW-csv/Friday-16-02-2018_TrafficForML_CICFlowMeter.csv \
+  --out test.csv \
+  --tz America/Moncton
 
-Usage example:
-  python make_artificial_ds.py \
-      --pcap /path/to/Friday-WorkingHours.pcap \
-      --flows /path/to/Friday-WorkingHours-Afternoon-DDos.pcap_ISCX.csv \
-      --out out_dataset.csv
-
+# Whole folder (streaming)
+py make_ds.py \
+  --pcap-dir ~/Desktop/RAW/DoS-02-16/pcap \
+  --flows ~/Desktop/RAW-csv/Friday-16-02-2018_TrafficForML_CICFlowMeter.csv \
+  --out friday16.csv \
+  --tz America/Moncton
 """
 
-import argparse
-import csv
-import datetime as dt
-import hashlib
-import os
-import sqlite3
-import sys
-from typing import Optional, Tuple
+import argparse, csv, os, sys, sqlite3, hashlib
+from typing import Optional, Tuple, List
 
 import dpkt
 import pandas as pd
 
-# ----------------------- Header rendering helpers -----------------------
+# ----------------------- Header parsing -----------------------
 
-def _ip_to_str(x: bytes) -> str:
+def _ip4(x: bytes) -> str:
     return ".".join(str(b) for b in x)
 
-def _ipv6_to_str(x: bytes) -> str:
-    # simple IPv6 render (no compression)
+def _ip6(x: bytes) -> str:
     return ":".join(f"{x[i]:02x}{x[i+1]:02x}" for i in range(0, 16, 2))
 
-def render_header_line(ts: float, buf: bytes) -> Optional[str]:
+def parse_packet(buf: bytes, ts: float):
     """
-    Parse Ethernet/IP/(TCP|UDP|ICMP) and render a compact single-line, payload-free header string.
-    Returns None if the packet is unparseable or unsupported.
+    Return a tuple: (fields_dict, header_text)
+    fields_dict contains structured header facts (for DB),
+    header_text is the canonical line used for Text in the CSV.
     """
     try:
         eth = dpkt.ethernet.Ethernet(buf)
-
-        # Base fields shared
-        ts_int = f"{ts:.6f}"
-
-        if isinstance(eth.data, dpkt.ip.IP):
-            ip = eth.data
-            src = _ip_to_str(ip.src)
-            dst = _ip_to_str(ip.dst)
-            ttl = getattr(ip, 'ttl', None)
-            ip_len = getattr(ip, 'len', None)
-            proto = ip.p
-            l3 = f"ipv4 src={src} dst={dst} ttl={ttl} ip_len={ip_len} proto={proto}"
-
-            # TCP
-            if isinstance(ip.data, dpkt.tcp.TCP):
-                tcp = ip.data
-                flags = tcp.flags
-                wnd = tcp.win
-                optlen = len(tcp.opts) if tcp.opts else 0
-                line = (
-                    f"ts={ts_int} {l3} tcp sport={tcp.sport} dport={tcp.dport} "
-                    f"flags={flags} win={wnd} optlen={optlen} hdrlen={(tcp.off*4)}"
-                )
-                return line
-
-            # UDP
-            if isinstance(ip.data, dpkt.udp.UDP):
-                udp = ip.data
-                line = (
-                    f"ts={ts_int} {l3} udp sport={udp.sport} dport={udp.dport} "
-                    f"ulen={udp.ulen}"
-                )
-                return line
-
-            # ICMP
-            if isinstance(ip.data, dpkt.icmp.ICMP):
-                icmp = ip.data
-                line = f"ts={ts_int} {l3} icmp type={icmp.type} code={icmp.code}"
-                return line
-
-            # Other L4
-            return f"ts={ts_int} {l3} l4=other"
-
-        elif isinstance(eth.data, dpkt.ip6.IP6):  # IPv6
-            ip6 = eth.data
-            src = _ipv6_to_str(ip6.src)
-            dst = _ipv6_to_str(ip6.dst)
-            hlim = getattr(ip6, 'hlim', None)
-            plen = getattr(ip6, 'plen', None)
-            nxt = ip6.nxt
-            l3 = f"ipv6 src={src} dst={dst} hlim={hlim} plen={plen} nxt={nxt}"
-
-            # TCP
-            if isinstance(ip6.data, dpkt.tcp.TCP):
-                tcp = ip6.data
-                flags = tcp.flags
-                wnd = tcp.win
-                optlen = len(tcp.opts) if tcp.opts else 0
-                line = (
-                    f"ts={ts_int} {l3} tcp sport={tcp.sport} dport={tcp.dport} "
-                    f"flags={flags} win={wnd} optlen={optlen} hdrlen={(tcp.off*4)}"
-                )
-                return line
-
-            # UDP
-            if isinstance(ip6.data, dpkt.udp.UDP):
-                udp = ip6.data
-                line = (
-                    f"ts={ts_int} {l3} udp sport={udp.sport} dport={udp.dport} "
-                    f"ulen={udp.ulen}"
-                )
-                return line
-
-            # ICMPv6
-            if isinstance(ip6.data, dpkt.icmp6.ICMP6):
-                icmp6 = ip6.data
-                line = f"ts={ts_int} {l3} icmp6 type={icmp6.type} code={icmp6.code}"
-                return line
-
-            return f"ts={ts_int} {l3} l4=other"
-
-        else:
-            # Non-IP (ARP, etc.). Keep minimal info so timing remains represented.
-            return f"ts={ts_int} l2=non_ip"
-
     except Exception:
-        # Corrupt or unparseable packet — skip quietly
-        return None
+        return None, None
 
-# ----------------------- SQLite index -----------------------
+    ts_s = f"{ts:.6f}"
+
+    # Defaults
+    fields = dict(
+        ts=float(ts),
+        l2="ethernet",
+        ip_version=None,
+        src=None, dst=None,
+        ttl=None, ip_len=None, ip_proto=None,
+        hlim=None, plen=None, nxt=None,
+        l4=None,
+        sport=None, dport=None,
+        tcp_flags=None, tcp_win=None, tcp_optlen=None, tcp_hdrlen=None,
+        udp_ulen=None,
+        icmp_type=None, icmp_code=None,
+        icmp6_type=None, icmp6_code=None,
+    )
+
+    # Non-IP (ARP, etc.)
+    if not isinstance(eth.data, (dpkt.ip.IP, dpkt.ip6.IP6)):
+        header_text = f"ts={ts_s} l2=non_ip"
+        return fields, header_text
+
+    # IPv4
+    if isinstance(eth.data, dpkt.ip.IP):
+        ip = eth.data
+        fields["ip_version"] = 4
+        fields["src"] = _ip4(ip.src)
+        fields["dst"] = _ip4(ip.dst)
+        fields["ttl"] = getattr(ip, "ttl", None)
+        fields["ip_len"] = getattr(ip, "len", None)
+        fields["ip_proto"] = ip.p
+
+        l3 = f"ipv4 src={fields['src']} dst={fields['dst']} ttl={fields['ttl']} ip_len={fields['ip_len']} proto={fields['ip_proto']}"
+
+        # TCP
+        if isinstance(ip.data, dpkt.tcp.TCP):
+            tcp = ip.data
+            fields.update(
+                l4="tcp",
+                sport=tcp.sport, dport=tcp.dport,
+                tcp_flags=tcp.flags, tcp_win=tcp.win,
+                tcp_optlen=len(tcp.opts) if tcp.opts else 0,
+                tcp_hdrlen=(tcp.off * 4)
+            )
+            header_text = (
+                f"ts={ts_s} {l3} tcp sport={tcp.sport} dport={tcp.dport} "
+                f"flags={tcp.flags} win={tcp.win} optlen={fields['tcp_optlen']} hdrlen={fields['tcp_hdrlen']}"
+            )
+            return fields, header_text
+
+        # UDP
+        if isinstance(ip.data, dpkt.udp.UDP):
+            udp = ip.data
+            fields.update(l4="udp", sport=udp.sport, dport=udp.dport, udp_ulen=udp.ulen)
+            header_text = (
+                f"ts={ts_s} {l3} udp sport={udp.sport} dport={udp.dport} ulen={udp.ulen}"
+            )
+            return fields, header_text
+
+        # ICMP
+        if isinstance(ip.data, dpkt.icmp.ICMP):
+            icmp = ip.data
+            fields.update(l4="icmp", icmp_type=icmp.type, icmp_code=icmp.code)
+            header_text = f"ts={ts_s} {l3} icmp type={icmp.type} code={icmp.code}"
+            return fields, header_text
+
+        # Other L4
+        fields["l4"] = "other"
+        header_text = f"ts={ts_s} {l3} l4=other"
+        return fields, header_text
+
+    # IPv6
+    if isinstance(eth.data, dpkt.ip6.IP6):
+        ip6 = eth.data
+        fields["ip_version"] = 6
+        fields["src"] = _ip6(ip6.src)
+        fields["dst"] = _ip6(ip6.dst)
+        fields["hlim"] = getattr(ip6, "hlim", None)
+        fields["plen"] = getattr(ip6, "plen", None)
+        fields["nxt"]  = ip6.nxt
+
+        l3 = f"ipv6 src={fields['src']} dst={fields['dst']} hlim={fields['hlim']} plen={fields['plen']} nxt={fields['nxt']}"
+
+        # TCP
+        if isinstance(ip6.data, dpkt.tcp.TCP):
+            tcp = ip6.data
+            fields.update(
+                l4="tcp",
+                sport=tcp.sport, dport=tcp.dport,
+                tcp_flags=tcp.flags, tcp_win=tcp.win,
+                tcp_optlen=len(tcp.opts) if tcp.opts else 0,
+                tcp_hdrlen=(tcp.off * 4)
+            )
+            header_text = (
+                f"ts={ts_s} {l3} tcp sport={tcp.sport} dport={tcp.dport} "
+                f"flags={tcp.flags} win={tcp.win} optlen={fields['tcp_optlen']} hdrlen={fields['tcp_hdrlen']}"
+            )
+            return fields, header_text
+
+        # UDP
+        if isinstance(ip6.data, dpkt.udp.UDP):
+            udp = ip6.data
+            fields.update(l4="udp", sport=udp.sport, dport=udp.dport, udp_ulen=udp.ulen)
+            header_text = (
+                f"ts={ts_s} {l3} udp sport={udp.sport} dport={udp.dport} ulen={udp.ulen}"
+            )
+            return fields, header_text
+
+        # ICMPv6
+        if isinstance(ip6.data, dpkt.icmp6.ICMP6):
+            icmp6 = ip6.data
+            fields.update(l4="icmp6", icmp6_type=icmp6.type, icmp6_code=icmp6.code)
+            header_text = f"ts={ts_s} {l3} icmp6 type={icmp6.type} code={icmp6.code}"
+            return fields, header_text
+
+        # Other L4
+        fields["l4"] = "other"
+        header_text = f"ts={ts_s} {l3} l4=other"
+        return fields, header_text
+
+    # Shouldn’t get here
+    return None, None
+
+# ----------------------- SQLite -----------------------
 
 def ensure_db(db_path: str):
     con = sqlite3.connect(db_path)
     cur = con.cursor()
     cur.execute("""
         CREATE TABLE IF NOT EXISTS packets (
-            ts REAL NOT NULL,
-            header TEXT NOT NULL
+            ts           REAL NOT NULL,
+            l2           TEXT,
+            ip_version   INTEGER,
+            src          TEXT,
+            dst          TEXT,
+            ttl          INTEGER,
+            ip_len       INTEGER,
+            ip_proto     INTEGER,
+            hlim         INTEGER,
+            plen         INTEGER,
+            nxt          INTEGER,
+            l4           TEXT,
+            sport        INTEGER,
+            dport        INTEGER,
+            tcp_flags    INTEGER,
+            tcp_win      INTEGER,
+            tcp_optlen   INTEGER,
+            tcp_hdrlen   INTEGER,
+            udp_ulen     INTEGER,
+            icmp_type    INTEGER,
+            icmp_code    INTEGER,
+            icmp6_type   INTEGER,
+            icmp6_code   INTEGER,
+            header       TEXT NOT NULL
         )
     """)
     cur.execute("CREATE INDEX IF NOT EXISTS idx_packets_ts ON packets(ts)")
+    # Optional useful indexes you can uncomment later:
+    # cur.execute("CREATE INDEX IF NOT EXISTS idx_packets_src ON packets(src)")
+    # cur.execute("CREATE INDEX IF NOT EXISTS idx_packets_dst ON packets(dst)")
     con.commit()
     return con
 
-def index_pcap_into_db(pcap_path: str, con: sqlite3.Connection, batch_size: int = 5000):
-    """
-    One pass over the pcap -> write (ts, header_line) rows to SQLite in batches.
-    """
-    inserted = 0
-    cur = con.cursor()
-    batch = []
+def insert_rows(cur, rows):
+    cur.executemany("""
+        INSERT INTO packets (
+            ts,l2,ip_version,src,dst,ttl,ip_len,ip_proto,hlim,plen,nxt,l4,
+            sport,dport,tcp_flags,tcp_win,tcp_optlen,tcp_hdrlen,udp_ulen,
+            icmp_type,icmp_code,icmp6_type,icmp6_code,header
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    """, rows)
 
+def index_one_pcap(pcap_path: str, con: sqlite3.Connection, batch_size: int = 5000):
+    cur = con.cursor()
+    batch = []; inserted = 0
     with open(pcap_path, "rb") as f:
         try:
-            pcap = dpkt.pcap.Reader(f)
+            reader = dpkt.pcap.Reader(f)
         except (ValueError, dpkt.dpkt.NeedData):
-            # Try pcapng
-            f.seek(0)
-            pcap = dpkt.pcapng.Reader(f)
-
-        for ts, buf in pcap:
-            header_line = render_header_line(ts, buf)
-            if header_line is None:
+            f.seek(0); reader = dpkt.pcapng.Reader(f)
+        for ts, buf in reader:
+            fields, header = parse_packet(buf, ts)
+            if header is None:  # unparseable
                 continue
-            batch.append((float(ts), header_line))
+            row = (
+                fields["ts"], fields["l2"], fields["ip_version"], fields["src"], fields["dst"],
+                fields["ttl"], fields["ip_len"], fields["ip_proto"], fields["hlim"], fields["plen"], fields["nxt"],
+                fields["l4"], fields["sport"], fields["dport"], fields["tcp_flags"], fields["tcp_win"],
+                fields["tcp_optlen"], fields["tcp_hdrlen"], fields["udp_ulen"], fields["icmp_type"], fields["icmp_code"],
+                fields["icmp6_type"], fields["icmp6_code"], header
+            )
+            batch.append(row)
             if len(batch) >= batch_size:
-                cur.executemany("INSERT INTO packets (ts, header) VALUES (?, ?)", batch)
-                con.commit()
-                inserted += len(batch)
-                batch.clear()
-
-        if batch:
-            cur.executemany("INSERT INTO packets (ts, header) VALUES (?, ?)", batch)
-            con.commit()
-            inserted += len(batch)
-
+                insert_rows(cur, batch); con.commit(); inserted += len(batch); batch.clear()
+    if batch:
+        insert_rows(cur, batch); con.commit(); inserted += len(batch)
     return inserted
 
-# ----------------------- Time parsing -----------------------
+def index_dir(pcap_dir: str, con: sqlite3.Connection, batch_size: int = 5000, exts=(".pcap",".pcapng",".cap")):
+    total = 0
+    for root, _, files in os.walk(pcap_dir):
+        for name in files:
+            if name.lower().endswith(exts):
+                path = os.path.join(root, name)
+                print(f"[+] Indexing {path}", file=sys.stderr)
+                total += index_one_pcap(path, con, batch_size)
+    return total
 
-def parse_flow_window(
-    ts_str: str,
-    duration_value: float,
-    duration_unit: str = "us",
-    tz: Optional[str] = None
-) -> Tuple[float, float]:
-    """
-    Parse cicflowmeter row into [start_epoch, end_epoch] in seconds.
-    - ts_str: cicflowmeter 'Timestamp' (varies by dataset formatting).
-    - duration_value: numeric duration.
-    - duration_unit: 'us' (microseconds), 'ms', or 's'.
-    - tz: e.g., 'UTC' or 'America/Toronto'. If None, treat as naive UTC.
-    """
-    # Robust parse with pandas
-    if tz is None:
-        # Treat the CSV timestamp as UTC
-        ts = pd.to_datetime(ts_str, errors="coerce", utc=True, dayfirst=True)
-    else:
-        # Treat CSV timestamp as **local** in the provided tz, then convert to UTC
-        ts_local = pd.to_datetime(ts_str, errors="coerce", dayfirst=True)
-        if ts_local is pd.NaT:
-            raise ValueError(f"Unparseable Timestamp: {ts_str}")
-        ts = ts_local.tz_localize(tz).tz_convert("UTC")
-
-    start_epoch = ts.value / 1e9  # ns -> s
-
-    # Duration to seconds
-    if duration_unit == "us":
-        dt_seconds = float(duration_value) / 1_000_000.0
-    elif duration_unit == "ms":
-        dt_seconds = float(duration_value) / 1_000.0
-    else:
-        dt_seconds = float(duration_value)
-
-    end_epoch = start_epoch + dt_seconds
-    return start_epoch, end_epoch
-
-def print_db_time_range(con: sqlite3.Connection, label: str = "DB"):
+def db_time_range(con: sqlite3.Connection):
     cur = con.cursor()
     cur.execute("SELECT MIN(ts), MAX(ts), COUNT(*) FROM packets")
     row = cur.fetchone()
     if row and row[0] is not None:
-        ts_min, ts_max, n = row
-        # Render in UTC for clarity
-        hmin = pd.to_datetime(ts_min, unit="s", utc=True)
-        hmax = pd.to_datetime(ts_max, unit="s", utc=True)
-        print(f"[i] {label} packets: {n} rows")
-        print(f"[i] {label} ts range (UTC): {hmin} .. {hmax}")
+        return row[0], row[1], row[2]
+    return None, None, 0
+
+# ----------------------- Time windows -----------------------
+
+def parse_flow_window(ts_str: str, duration_value: float, duration_unit: str="us", tz: Optional[str]=None)->Tuple[float,float]:
+    # CICFlowMeter timestamps are local (Atlantic for CICIDS2018). We localize then convert to UTC.
+    if tz is None:
+        ts = pd.to_datetime(ts_str, errors="coerce", utc=True, dayfirst=True)
     else:
-        print(f"[i] {label}: no rows")
+        ts_local = pd.to_datetime(ts_str, errors="coerce", dayfirst=True)
+        if ts_local is pd.NaT:
+            raise ValueError(f"Unparseable Timestamp: {ts_str}")
+        ts = ts_local.tz_localize(tz).tz_convert("UTC")
+    start = ts.value / 1e9
+    if duration_unit == "us":  dt = float(duration_value)/1_000_000.0
+    elif duration_unit == "ms": dt = float(duration_value)/1_000.0
+    else:                       dt = float(duration_value)
+    return start, start + dt
+
+def print_db_time_range(con: sqlite3.Connection, label: str = "DB"):
+    tmin, tmax, n = db_time_range(con)
+    if n:
+        print(f"[i] {label} packets: {n} rows", file=sys.stderr)
+        print(f"[i] {label} ts range (UTC): {pd.to_datetime(tmin, unit='s', utc=True)} .. {pd.to_datetime(tmax, unit='s', utc=True)}", file=sys.stderr)
+    else:
+        print(f"[i] {label}: no rows", file=sys.stderr)
 
 # ----------------------- Dataset builder -----------------------
 
 def build_dataset_from_windows(
-    con: sqlite3.Connection,
-    flows_csv: str,
-    out_csv: str,
-    ts_col: str = "Timestamp",
-    dur_col: str = "Flow Duration",
-    label_col: str = "Label",
-    duration_unit: str = "us",
-    tz: Optional[str] = None,
-    limit_rows: Optional[int] = None,
-    dedup_identical_windows: bool = False
+    con: sqlite3.Connection, flows_csv: str, out_csv: str,
+    ts_col="Timestamp", dur_col="Flow Duration", label_col="Label",
+    duration_unit="us", tz: Optional[str]=None,
+    limit_rows: Optional[int]=None, dedup_identical_windows: bool=False
 ):
-    """
-    For each flow row, query [start, end] and emit a single textual sample + label.
-    """
     df = pd.read_csv(flows_csv, low_memory=False, dtype=str)
     df[dur_col] = pd.to_numeric(df[dur_col], errors="coerce")
-    
+
+    req = [ts_col, dur_col, label_col]
+    miss = [c for c in req if c not in df.columns]
+    if miss:
+        raise ValueError(f"Missing required columns in flows CSV: {miss}")
+
+    # Quick sanity
     sample = df.iloc[0]
-    print("Sample ts (raw):", sample[ts_col])
-    print("Sample dur (raw):", sample[dur_col])
     s_ep, e_ep = parse_flow_window(sample[ts_col], df.loc[df.index[0], dur_col], duration_unit=duration_unit, tz=tz)
-    print("Sample window (UTC epoch):", s_ep, e_ep)
-    print("Sample window (UTC human):", pd.to_datetime([s_ep, e_ep], unit="s", utc=True).tolist())
+    print("Sample ts (raw):", sample[ts_col], file=sys.stderr)
+    print("Sample dur (raw):", sample[dur_col], file=sys.stderr)
+    print("Sample window (UTC):", pd.to_datetime([s_ep, e_ep], unit="s", utc=True).tolist(), file=sys.stderr)
 
-    required = [ts_col, dur_col, label_col]
-    missing = [c for c in required if c not in df.columns]
-    if missing:
-        raise ValueError(f"Missing required columns in flows CSV: {missing}")
+    os.makedirs(os.path.dirname(os.path.abspath(out_csv)) or ".", exist_ok=True)
+    with open(out_csv, "w", newline="", encoding="utf-8") as out_f:
+        writer = csv.DictWriter(out_f, fieldnames=["Text","Label"])
+        writer.writeheader()
 
-    # Prepare writer
-    os.makedirs(os.path.dirname(os.path.abspath(out_csv)), exist_ok=True)
-    out_f = open(out_csv, "w", newline="", encoding="utf-8")
-    writer = csv.DictWriter(out_f, fieldnames=["Text", "Label"])
-    writer.writeheader()
-
-    cur = con.cursor()
-    seen_hashes = set()
-
-    nrows = len(df) if limit_rows is None else min(limit_rows, len(df))
-    for i in range(nrows):
-        row = df.iloc[i]
-        try:
-            start_ts, end_ts = parse_flow_window(
-                str(row[ts_col]),
-                row[dur_col],
-                duration_unit=duration_unit,
-                tz=tz
-            )
-        except Exception as e:
-            # Skip rows with invalid times
-            continue
-
-        # SQLite range query
-        cur.execute(
-            "SELECT header FROM packets WHERE ts >= ? AND ts <= ? ORDER BY ts ASC",
-            (start_ts, end_ts),
-        )
-        headers = [h[0] for h in cur.fetchall()]
-        if not headers:
-            # No packets in window — keep an empty text or skip?
-            # We'll keep empty to preserve label distribution; change if you prefer skipping.
-            window_text = ""
-        else:
-            window_text = "\n".join(headers)
-
-        if dedup_identical_windows and window_text:
-            h = hashlib.sha256(window_text.encode("utf-8")).hexdigest()
-            if h in seen_hashes:
-                # Skip exact duplicate window (optional strategy)
+        cur = con.cursor()
+        seen = set()
+        nrows = len(df) if limit_rows is None else min(limit_rows, len(df))
+        for i in range(nrows):
+            row = df.iloc[i]
+            try:
+                start_ts, end_ts = parse_flow_window(str(row[ts_col]), row[dur_col], duration_unit=duration_unit, tz=tz)
+            except Exception:
                 continue
-            seen_hashes.add(h)
 
-        writer.writerow({
-            "Text": window_text,
-            "Label": row[label_col]
-        })
+            cur.execute("SELECT header FROM packets WHERE ts >= ? AND ts <= ? ORDER BY ts ASC", (start_ts, end_ts))
+            headers = [h for (h,) in cur.fetchall()]
+            window_text = "\n".join(headers) if headers else ""
 
-    out_f.close()
+            if dedup_identical_windows and window_text:
+                h = hashlib.sha256(window_text.encode("utf-8")).hexdigest()
+                if h in seen: continue
+                seen.add(h)
+
+            writer.writerow({"Text": window_text, "Label": row[label_col]})
 
 # ----------------------- CLI -----------------------
 
 def main():
-    ap = argparse.ArgumentParser(description="Create artificial LLM dataset from PCAP + CICFlowMeter CSV.")
-    ap.add_argument("--pcap", required=True, help="Path to a PCAP/PCAPNG file.")
-    ap.add_argument("--flows", required=True, help="Path to CICFlowMeter CSV.")
-    ap.add_argument("--out", required=True, help="Path to output CSV with Text,Label.")
-    ap.add_argument("--db", default=None, help="Optional path to SQLite DB (default: alongside PCAP).")
-    ap.add_argument("--ts-col", default="Timestamp", help="Timestamp column in flows CSV.")
-    ap.add_argument("--dur-col", default="Flow Duration", help="Flow duration column in flows CSV.")
-    ap.add_argument("--label-col", default="Label", help="Label column in flows CSV.")
-    ap.add_argument("--duration-unit", choices=["us", "ms", "s"], default="us", help="Unit of Flow Duration.")
-    # ap.add_argument("--tz", default=None, help="Timezone of the CSV timestamps (e.g., 'UTC'). If omitted, treat as UTC.")
-    ap.add_argument("--tz", default="America/Moncton", help="Timezone of the CSV timestamps (e.g., 'UTC'). If omitted, treat as UTC.")
-    # ap.add_argument("--limit-rows", type=int, default=None, help="Limit number of flow rows for a quick run.")
-    ap.add_argument("--limit-rows", type=int, default=10, help="Limit number of flow rows for a quick run.")
-    ap.add_argument("--skip-index", action="store_true", help="Assume DB already exists and skip re-indexing the PCAP.")
-    ap.add_argument("--dedup-windows", action="store_true", help="Drop exact-duplicate windows by content hash.")
+    ap = argparse.ArgumentParser(description="Index PCAP headers into SQLite and build CICFlowMeter-aligned CSV windows.")
+    src = ap.add_mutually_exclusive_group(required=True)
+    src.add_argument("--pcap", help="Path to a single PCAP/PCAPNG")
+    src.add_argument("--pcap-dir", help="Path to a directory of PCAP/PCAPNG files (recursive)")
+
+    ap.add_argument("--flows", required=True, help="CICFlowMeter CSV")
+    ap.add_argument("--out", required=True, help="Output CSV with Text,Label")
+    ap.add_argument("--db", default=None, help="SQLite DB path (defaults near the pcap or dir)")
+    ap.add_argument("--ts-col", default="Timestamp")
+    ap.add_argument("--dur-col", default="Flow Duration")
+    ap.add_argument("--label-col", default="Label")
+    ap.add_argument("--duration-unit", choices=["us","ms","s"], default="us")
+    ap.add_argument("--tz", default="America/Moncton", help="Timezone of CSV timestamps (e.g., Atlantic for CICIDS2018)")
+    ap.add_argument("--limit-rows", type=int, default=50)
+    ap.add_argument("--skip-index", action="store_true")
+    ap.add_argument("--dedup-windows", action="store_true")
     args = ap.parse_args()
 
-    db_path = args.db or (os.path.splitext(os.path.abspath(args.pcap))[0] + ".packets.sqlite")
+    # Choose DB path
+    if args.db:
+        db_path = args.db
+    else:
+        base = args.pcap if args.pcap else args.pcap_dir.rstrip(os.sep)
+        db_path = os.path.splitext(os.path.abspath(base))[0] + ".packets.sqlite"
+
     con = ensure_db(db_path)
 
     if not args.skip_index:
-        print(f"[+] Indexing PCAP into {db_path} ...", file=sys.stderr)
-        inserted = index_pcap_into_db(args.pcap, con)
+        if args.pcap:
+            print(f"[+] Indexing PCAP into {db_path} ...", file=sys.stderr)
+            inserted = index_one_pcap(args.pcap, con)
+        else:
+            print(f"[+] Indexing PCAPs from {args.pcap_dir} into {db_path} ...", file=sys.stderr)
+            inserted = index_dir(args.pcap_dir, con)
         print(f"[+] Inserted {inserted} packet headers.", file=sys.stderr)
     else:
-        print(f"[+] Skipping index build; using existing DB: {db_path}", file=sys.stderr)
+        print(f"[+] Skipping index; using existing DB {db_path}", file=sys.stderr)
 
     print_db_time_range(con, label="SQLite")
+
     print(f"[+] Building dataset to {args.out} ...", file=sys.stderr)
     build_dataset_from_windows(
-        con=con,
-        flows_csv=args.flows,
-        out_csv=args.out,
-        ts_col=args.ts_col,
-        dur_col=args.dur_col,
-        label_col=args.label_col,
-        duration_unit=args.duration_unit,
-        tz=args.tz,
-        limit_rows=args.limit_rows,
-        dedup_identical_windows=args.dedup_windows
+        con, args.flows, args.out,
+        ts_col=args.ts_col, dur_col=args.dur_col, label_col=args.label_col,
+        duration_unit=args.duration_unit, tz=args.tz,
+        limit_rows=args.limit_rows, dedup_identical_windows=args.dedup_windows
     )
     print("[+] Done.", file=sys.stderr)
 
