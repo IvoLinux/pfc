@@ -41,7 +41,7 @@ NUM_EPOCHS       = 3
 LEARNING_RATE    = 3e-5
 WEIGHT_DECAY     = 0.01
 WARMUP_RATIO     = 0.05    # 5% of dataset rows used as warmup
-MAX_LENGTH       = 256
+MAX_LENGTH       = 512
 CHECKPOINT_DIR   = "./checkpoints"
 LOG_DIR          = os.path.join(CHECKPOINT_DIR, "logs")
 SEED             = 21023 + 21041
@@ -64,22 +64,36 @@ model     = AutoModelForSequenceClassification.from_pretrained(
 ).to(device)
 
 # ---------------------------------------------------------------------------- #
-#                    BUILD CSV‐OFFSET INDEX & COUNT ROWS                       #
+#                             LOAD CSV RECORDS (ROW=1 SAMPLE)                  #
 # ---------------------------------------------------------------------------- #
-with open(CSV_PATH, "r", newline="") as f:
-    header_line = f.readline()
-    header = next(csv.reader([header_line]))
+# We parse CSV rows. Each row's quoted Text cell may span lines.
+# This keeps one sample per CSV record, regardless of how many newlines it has.
+import csv as _csv
 
-    offsets = []
-    while True:
-        pos = f.tell()
-        line = f.readline()
-        if not line:
-            break
-        offsets.append(pos)
+_csv.field_size_limit(sys.maxsize)  # allow very large cells
 
-total_rows        = len(offsets)
-batches_per_epoch = math.ceil(total_rows / BATCH_SIZE)
+def load_csv_records(csv_path, text_col=TEXT_KEY, label_col=LABEL_KEY, encoding="utf-8"):
+    texts, labels = [], []
+    with open(csv_path, "r", encoding=encoding, newline="") as f:
+        reader = _csv.DictReader(f)
+        # normalize header names once
+        header_map = {c.strip().lower(): c for c in (reader.fieldnames or [])}
+        tcol = header_map.get(text_col.strip().lower(), text_col)
+        lcol = header_map.get(label_col.strip().lower(), label_col)
+
+        for row in reader:
+            text  = row.get(tcol, "") or ""
+            label = row.get(lcol, "") or ""
+            texts.append(text)
+            labels.append(label)
+    return texts, labels
+
+# Load once, then treat each CSV row as one training sample
+texts, labels = load_csv_records(CSV_PATH, TEXT_KEY, LABEL_KEY)
+
+# Row-count now means sample-count
+total_samples     = len(texts)
+batches_per_epoch = math.ceil(total_samples / BATCH_SIZE)
 total_steps       = batches_per_epoch * NUM_EPOCHS
 warmup_steps      = int(total_steps * WARMUP_RATIO)
 
@@ -138,51 +152,30 @@ else:
 # ---------------------------------------------------------------------------- #
 #                          MAP-STYLE DATASET DEFINITION                        #
 # ---------------------------------------------------------------------------- #
-class IndexedCSV(Dataset):
+class InMemoryCSVDataset(Dataset):
     """
-    A Dataset that keeps only integer offsets in RAM and
-    seeks directly to each CSV row when __getitem__ is called.
+    Each item is one CSV record: the whole 'Text' field (possibly multi-line)
+    and its label. No file seeking; parsing happened once up-front.
     """
-    def __init__(self, csv_path, offsets, header, tokenizer, max_length, indices):
-        self.csv_path   = csv_path
-        self.offsets    = offsets
-        self.header     = header
-        self.tokenizer  = tokenizer
-        self.max_length = max_length
-        self.indices    = indices
+    def __init__(self, texts, labels, tokenizer, max_length, indices):
+        self.texts     = texts
+        self.labels    = labels
+        self.tokenizer = tokenizer
+        self.max_length= max_length
+        self.indices   = indices
 
     def __len__(self):
         return len(self.indices)
 
     def __getitem__(self, idx):
-        # find the file‐offset for this sample
-        off = self.offsets[self.indices[idx]]
-        # open & seek
-        with open(self.csv_path, "r", newline="") as f:
-            f.seek(off)
-            reader = csv.DictReader(f, fieldnames=self.header)
-            row = next(reader)
-
-        text_col = next(
-            h for h in self.header
-            if TEXT_KEY.lower() == h.strip().lower()
-        )
-        label_col = next(
-            h for h in self.header
-            if LABEL_KEY.lower() == h.strip().lower()
-        )
-
-        # Raw text already contains the pcap window as a string
-        text_raw = row[text_col] if row[text_col] is not None else ""
-        text = str(text_raw)
-
-        # Binary label: 0 = Benign, 1 = Anomaly (anything not "Benign")
-        lab_up = (row[label_col] or "").strip().upper()
-        label = 0 if BINARY_BENIGN in lab_up else 1
-
+        i = self.indices[idx]
+        t = self.texts[i]
+        y_raw = self.labels[i]
+        # Binary mapping: 0 if label contains "BENIGN" (case-insensitive), else 1
+        y = 0 if BINARY_BENIGN in str(y_raw).strip().upper() else 1
 
         tokens = self.tokenizer(
-            text,
+            t,
             padding="max_length",
             truncation=True,
             max_length=self.max_length,
@@ -191,7 +184,7 @@ class IndexedCSV(Dataset):
         return {
             "input_ids":      tokens["input_ids"].squeeze(0),
             "attention_mask": tokens["attention_mask"].squeeze(0),
-            "labels":         torch.tensor(label, dtype=torch.long),
+            "labels":         torch.tensor(y, dtype=torch.long),
         }
 
 # ---------------------------------------------------------------------------- #
@@ -241,7 +234,7 @@ for epoch in range(start_epoch, NUM_EPOCHS):
 
     # Deterministically shuffle rows for this epoch
     random.seed(SEED + epoch)
-    indices = list(range(total_rows))
+    indices = list(range(total_samples))
     random.shuffle(indices)
 
     # If we're resuming mid‐epoch, drop the already‐processed examples
@@ -254,10 +247,9 @@ for epoch in range(start_epoch, NUM_EPOCHS):
         epoch_loss     = 0.0
         batches_offset = 0
     # Build DataLoader with our offset‐indexed CSV
-    dataset = IndexedCSV(
-        csv_path   = CSV_PATH,
-        offsets    = offsets,
-        header     = header,
+    dataset = InMemoryCSVDataset(
+        texts      = texts,
+        labels     = labels,
         tokenizer  = tokenizer,
         max_length = MAX_LENGTH,
         indices    = indices,
@@ -268,6 +260,7 @@ for epoch in range(start_epoch, NUM_EPOCHS):
         shuffle     = False,   # already shuffled via `indices`
         num_workers = 4,
         pin_memory  = True,
+        persistent_workers = True,
     )
     steps_in_epoch = math.ceil(len(indices) / BATCH_SIZE)
     pbar = tqdm(loader, total=steps_in_epoch, desc=f"Epoch {epoch+1}/{NUM_EPOCHS}")

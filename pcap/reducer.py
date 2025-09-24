@@ -17,12 +17,13 @@ def main():
         raise FileNotFoundError(f"Input file not found: {input_path}")
 
     df = pd.read_csv(input_path)
+    df = df.sample(frac=1.0, random_state=21023).reset_index(drop=True)
 
-    n_train = max(1, len(df) // 15)
+    n_train = max(1, len(df) // 2)
     df_train_small = df.iloc[:n_train]
 
-    n_infer = max(1, len(df_train_small) // 5)
-    df_infer_small = df_train_small.iloc[:n_infer]
+    n_infer = max(1, n_train // 5)
+    df_infer_small = df.iloc[n_train:n_train + n_infer]
 
     out_train = input_path.parent / "train_small.csv"
     out_infer = input_path.parent / "inference_small.csv"
