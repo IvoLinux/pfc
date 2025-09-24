@@ -7,13 +7,16 @@ import DatasetUploader from '../components/DatasetUploader';
 
 interface Model { filename:string; display_name:string; kind:'tabular'|'llm' }
 interface Dataset { filename:string }
+interface JobMeta { id:string; title?:string }
 
 export default function InferencePage() {
-  const [kind, setKind] = useState<'tabular'|'llm'>('tabular');
+  // Default to LLM since the Tabular option is commented out in the UI
+  const [kind, setKind] = useState<'tabular'|'llm'>('llm');
   const [models, setModels] = useState<Model[]>([]);
   const [datasets, setDatasets] = useState<Dataset[]>([]);
   const [checkpoint, setCheckpoint] = useState('');
   const [dataset, setDataset]       = useState('');
+  const [jobs, setJobs] = useState<JobMeta[]>([]);
 
   const loadDatasets = useCallback(async () => {
     try {
@@ -26,17 +29,39 @@ export default function InferencePage() {
   }, []);
 
   useEffect(() => {
-  (async () => {
-    try {
-      const r = await fetch('/api/models');
-      if (!r.ok) throw new Error(r.statusText);
-      setModels(await r.json());
-    } catch (err) {
-      console.error('Failed to load models:', err);
-    }
-  })();
+    (async () => {
+      try {
+        const r = await fetch('/api/models');
+        if (!r.ok) throw new Error(r.statusText);
+        setModels(await r.json());
+      } catch (err) {
+        console.error('Failed to load models:', err);
+      }
+    })();
     loadDatasets();
   }, [loadDatasets]);
+
+  // Load jobs to map LLM checkpoints -> human-friendly job titles
+  useEffect(() => {
+    (async () => {
+      try {
+        const r = await fetch('/api/jobs');
+        if (!r.ok) return;
+        setJobs(await r.json());
+      } catch (e) {
+        console.error('Failed to load jobs:', e);
+      }
+    })();
+  }, []);
+
+  // Given an LLM model entry, extract its jobId and find the job title
+  const labelForModel = (m: Model) => {
+    if (m.kind !== 'llm') return m.display_name;
+    // Backend lists LLM checkpoints as: "<jobId>/<checkpoint-file>.pt"
+    const jobId = m.filename.split('/')[0];
+    const job = jobs.find(j => j.id === jobId);
+    return job?.title || m.display_name;
+  };
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -47,7 +72,7 @@ export default function InferencePage() {
         body: JSON.stringify({ kind, checkpoint_filename: checkpoint, dataset_filename: dataset })
       });
       if (!res.ok) throw new Error(`Server error: ${res.statusText}`);
-      // you might want to reset your form here or show a notification
+      // Optionally: clear form / show toast
     } catch (err) {
       console.error('Failed to start inference:', err);
     }
@@ -69,10 +94,12 @@ export default function InferencePage() {
                sx={{ display:'flex', flexDirection:'column', gap:2 }}>
 
             <FormControl fullWidth>
-              <InputLabel>Família de Modelo</ InputLabel>
-              <Select value={kind} label="Família de Modelo"
-                      onChange={e => { setKind(e.target.value as any); setCheckpoint(''); }}>
-                {/* <MenuItem value="tabular">Tabular</MenuItem>w */}
+              <InputLabel>Família de Modelo</InputLabel>
+              <Select
+                value={kind}
+                label="Família de Modelo"
+                onChange={e => { setKind(e.target.value as any); setCheckpoint(''); }}>
+                {/* <MenuItem value="tabular">Tabular</MenuItem> */}
                 <MenuItem value="llm">LLM</MenuItem>
               </Select>
             </FormControl>
@@ -81,7 +108,9 @@ export default function InferencePage() {
               <InputLabel>Checkpoint</InputLabel>
               <Select value={checkpoint} label="Checkpoint" onChange={e => setCheckpoint(e.target.value)}>
                 {modelsOfKind.map(m => (
-                  <MenuItem key={m.filename} value={m.filename}>{m.display_name}</MenuItem>
+                  <MenuItem key={m.filename} value={m.filename}>
+                    {labelForModel(m)}
+                  </MenuItem>
                 ))}
               </Select>
             </FormControl>

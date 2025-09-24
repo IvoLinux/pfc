@@ -7,6 +7,7 @@ from fastapi import FastAPI, UploadFile, File, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
+from datetime import datetime
 
 from .database import SessionLocal, engine
 from .models import Base, Job
@@ -35,6 +36,18 @@ app.mount(
     name="inference-results",
 )
 
+# Helper
+
+def _default_title(kind: str, model_name: str, dataset_filename: str) -> str:
+    ds = os.path.splitext(os.path.basename(dataset_filename))[0]
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M")
+    if kind == "tabular":
+        return f"Train (Tabular) {model_name} on {ds} · {ts}"
+    if kind == "llm":
+        return f"Train (LLM) {model_name} on {ds} · {ts}"
+    # infer fallbacks (kind here is 'tabular' or 'llm' in payload)
+    return f"Job {kind} on {ds} · {ts}"
+
 # --------------------------------------------------------------------------- #
 #                           DB helper (yield style)                           #
 # --------------------------------------------------------------------------- #
@@ -56,22 +69,19 @@ def create_train_job(payload: JobCreateTrain):
     """
     job_id = payload.model_name + '_' + str(uuid4())
     payload_dict = payload.model_dump()
-    hyper_p_names = ("num_epochs","batch_size", "learning_rate","weight_decay",
-                    #  "warmup_ratio"
-                     )
+    hyper_p_names = ("num_epochs","batch_size","learning_rate","weight_decay")
     job = Job(
         id=job_id,
         kind=f"{payload.kind}_train",
         model_name=payload.model_name,
         dataset_filename=payload.dataset_filename,
+        title=payload.title or _default_title(payload.kind, payload.model_name, payload.dataset_filename),
         hyperparameters={k: payload_dict[k] for k in hyper_p_names},
         status="QUEUED",
         progress=0,
     )
     db: Session = next(get_db())
     db.add(job); db.commit()
-
-    # background_tasks.add_task(run_job, job_id)
     t = threading.Thread(target=run_job, args=(job_id,), daemon=True)
     t.start()
     return JobStatus.model_validate(job)
@@ -82,24 +92,46 @@ def create_infer_job(payload: JobCreateInfer):
     job_id = str(uuid4())
     kind   = f"{payload.kind}_infer"
 
+    # Derivar informações do checkpoint
+    ckpt_full = payload.checkpoint_filename  # ex: "<jobId>/<file>.pt"
+    if "/" in ckpt_full:
+        ckpt_job_id, ckpt_file = ckpt_full.split("/", 1)
+    else:
+        ckpt_job_id, ckpt_file = "", ckpt_full
+
+    # Tentar achar o título do job de TREINO que gerou o checkpoint (mesmo job_id da pasta)
+    db_lookup: Session = next(get_db())
+    train_job = db_lookup.query(Job).get(ckpt_job_id) if ckpt_job_id else None
+    ckpt_human = (train_job.title if train_job and train_job.title else ckpt_file)
+
+    ds_base = os.path.basename(payload.dataset_filename)
+    inferred_title = payload.title or f"Infer (LLM) on {ds_base} · ckpt: {ckpt_human}"
+
     job = Job(
         id=job_id,
         kind=kind,
         model_name="N/A",
         dataset_filename=payload.dataset_filename,
         checkpoint_filename=payload.checkpoint_filename,
+        title=inferred_title,
         status="QUEUED",
         progress=0,
+        # Guardar no metrics_json para a UI exibir facilmente
+        metrics_json={
+            "checkpoint": ckpt_full,
+            "checkpoint_job_id": ckpt_job_id or None,
+            "checkpoint_file": ckpt_file,
+            "checkpoint_title": ckpt_human,
+        },
     )
 
-    db: Session = next(get_db())
-    db.add(job)
-    db.commit()
+    db_lookup.add(job)
+    db_lookup.commit()
 
     t = threading.Thread(target=run_job, args=(job_id,), daemon=True)
     t.start()
-
     return JobStatus.model_validate(job)
+
 
 @app.get("/api/jobs", response_model=List[JobStatus])
 def list_jobs(db: Session = Depends(get_db)):
