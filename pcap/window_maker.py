@@ -312,11 +312,30 @@ def index_one_pcap(pcap_path: str, con: sqlite3.Connection, batch_size: int = 50
                 last_ts = float(ts)
 
                 row = (
-                    fields["ts"], fields["l2"], fields["ip_version"], fields["src"], fields["dst"],
-                    fields["ttl"], fields["ip_len"], fields["ip_proto"], fields["hlim"], fields["plen"], fields["nxt"],
-                    fields["l4"], fields["sport"], fields["dport"], fields["tcp_flags"], fields["tcp_win"],
-                    fields["tcp_optlen"], fields["tcp_hdrlen"], fields["udp_ulen"], fields["icmp_type"], fields["icmp_code"],
-                    fields["icmp6_type"], fields["icmp6_code"], header
+                    fields["ts"],
+                    fields["l2"],
+                    fields["ip_version"],
+                    fields["src"],
+                    fields["dst"],
+                    fields["ttl"],
+                    fields["ip_len"],
+                    fields["ip_proto"],
+                    fields["hlim"],
+                    fields["plen"],
+                    fields["nxt"],
+                    fields["l4"],
+                    fields["sport"],
+                    fields["dport"],
+                    fields["tcp_flags"],
+                    fields["tcp_win"],
+                    fields["tcp_optlen"],
+                    fields["tcp_hdrlen"],
+                    fields["udp_ulen"],
+                    fields["icmp_type"],
+                    fields["icmp_code"],
+                    fields["icmp6_type"],
+                    fields["icmp6_code"],
+                    header
                 )
                 batch.append(row)
                 if len(batch) >= batch_size:
@@ -426,8 +445,23 @@ def build_dataset_from_windows(
     ts_col="Timestamp", dur_col="Flow Duration", label_col="Label",
     duration_unit="us", tz: Optional[str]=None,
     limit_rows: Optional[int]=None, dedup_identical_windows: bool=False,
-    pkt_window: int = 0,
+    pkt_window: int = 32,   # smaller default is DistilBERT-friendly
 ):
+    import re
+
+    # Select the original canonical header text only
+    SELECT_COL = "header"
+
+    # Removal of noisy / token-heavy fields:
+    # - timestamps, IP addresses, low-level IP fields, TCP optlen/hdrlen
+    # Keep: l3/l4 words (ipv4/ipv6, tcp/udp/icmp), dport/sport, flags, win, udp_ulen, icmp types/codes, etc.
+    BAD_FIELDS_RE = re.compile(
+        r'\b(?:'
+        r'ts|src|dst|ttl|ip_proto|hlim|nxt|optlen|hdrlen'
+        r')=[^\s]+'  # eat "key=value" up to next space
+    )
+    MULTISPACE_RE = re.compile(r'\s{2,}')
+
     df = pd.read_csv(flows_csv, low_memory=False, dtype=str)
     df[dur_col] = pd.to_numeric(df[dur_col], errors="coerce")
 
@@ -443,7 +477,8 @@ def build_dataset_from_windows(
         print("Sample ts (raw):", sample[ts_col], file=sys.stderr)
         print(f"Sample packet window: start={pd.to_datetime(s_ep, unit='s', utc=True)} size={pkt_window}", file=sys.stderr)
     else:
-        s_ep, e_ep = parse_flow_window(sample[ts_col], df.loc[df.index[0], dur_col], duration_unit=duration_unit, tz=tz)
+        s_ep, e_ep = parse_flow_window(sample[ts_col], df.loc[df.index[0], dur_col],
+                                       duration_unit=duration_unit, tz=tz)
         print("Sample ts (raw):", sample[ts_col], file=sys.stderr)
         print("Sample dur (raw):", sample[dur_col], file=sys.stderr)
         print("Sample window (UTC):", pd.to_datetime([s_ep, e_ep], unit="s", utc=True).tolist(), file=sys.stderr)
@@ -464,24 +499,35 @@ def build_dataset_from_windows(
                     start_ts = _parse_start_ts(str(row[ts_col]), tz)
                 except Exception:
                     continue
-
                 cur.execute(
-                    "SELECT header FROM packets WHERE ts >= ? AND ip_version IS NOT NULL ORDER BY ts ASC LIMIT ?",
+                    f"SELECT {SELECT_COL} FROM packets "
+                    "WHERE ts >= ? AND ip_version IS NOT NULL "
+                    "ORDER BY ts ASC LIMIT ?",
                     (start_ts, pkt_window)
                 )
-                headers = [h for (h,) in cur.fetchall()]
-
             else:
                 try:
-                    start_ts, end_ts = parse_flow_window(str(row[ts_col]), row[dur_col], duration_unit=duration_unit, tz=tz)
+                    start_ts, end_ts = parse_flow_window(str(row[ts_col]), row[dur_col],
+                                                         duration_unit=duration_unit, tz=tz)
                 except Exception:
                     continue
-
                 cur.execute(
-                    "SELECT header FROM packets WHERE ts >= ? AND ts <= ? AND ip_version IS NOT NULL ORDER BY ts ASC",
+                    f"SELECT {SELECT_COL} FROM packets "
+                    "WHERE ts >= ? AND ts <= ? AND ip_version IS NOT NULL "
+                    "ORDER BY ts ASC",
                     (start_ts, end_ts)
                 )
-                headers = [h for (h,) in cur.fetchall()]
+
+            # Fetch raw lines and strip the "bad" fields
+            headers = []
+            for (h,) in cur.fetchall():
+                if not h:
+                    continue
+                # remove key=value tokens we don't want
+                s = BAD_FIELDS_RE.sub('', h)
+                # collapse multiple spaces left by removals
+                s = MULTISPACE_RE.sub(' ', s).strip()
+                headers.append(s)
 
             window_text = "\n".join(headers) if headers else ""
 
@@ -509,10 +555,10 @@ def main():
     ap.add_argument("--label-col", default="Label")
     ap.add_argument("--duration-unit", choices=["us","ms","s"], default="us")
     ap.add_argument("--tz", default="America/Moncton", help="Timezone of CSV timestamps (e.g., Atlantic for CICIDS2018)")
-    ap.add_argument("--limit-rows", type=int, default=100)
+    ap.add_argument("--limit-rows", type=int, default=None)
     ap.add_argument("--skip-index", action="store_true")
     ap.add_argument("--dedup-windows", action="store_true")
-    ap.add_argument("--pkt-window", type=int, default=100, help="If > 0, build each example from the next N packet headers starting at the row's timestamp (overrides duration-based windows).")
+    ap.add_argument("--pkt-window", type=int, default=40, help="If > 0, build each example from the next N packet headers starting at the row's timestamp (overrides duration-based windows).")
     args = ap.parse_args()
 
     # Choose DB path
