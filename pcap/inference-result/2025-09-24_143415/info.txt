@@ -1,0 +1,8 @@
+Date/time:     2025-09-24_143415
+Input CSV:     inference_small.csv
+Checkpoint:    ./checkpoints/checkpoint-epoch1-20250924_140554.pt
+Model name:    distilbert-base-uncased
+Batch size:    8
+Max length:    512
+Total samples: 104857
+ROC-AUC:       0.718470

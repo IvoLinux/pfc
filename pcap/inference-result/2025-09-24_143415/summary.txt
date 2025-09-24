@@ -1,0 +1,19 @@
+Labels order: Benign, Anomaly
+
+Confusion Matrix (counts):
+[[41584 25130]
+ [12376 25767]]
+
+Confusion Matrix (row-normalized):
+[[0.6233 0.3767]
+ [0.3245 0.6755]]
+
+Classification Report:
+              precision    recall  f1-score   support
+
+      Benign     0.7706    0.6233    0.6892     66714
+     Anomaly     0.5063    0.6755    0.5788     38143
+
+    accuracy                         0.6423    104857
+   macro avg     0.6385    0.6494    0.6340    104857
+weighted avg     0.6745    0.6423    0.6490    104857
