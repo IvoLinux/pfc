@@ -1,7 +1,6 @@
 services:
   backend:
     build: ./backend
-    gpus: all
     ports:
       - "8000:8000"
     volumes:
@@ -12,11 +11,12 @@ services:
       - PYTHONUNBUFFERED=1
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
-    devices:
-      - /dev/nvidia0:/dev/nvidia0
-      - /dev/nvidiactl:/dev/nvidiactl
-      - /dev/nvidia-uvm:/dev/nvidia-uvm
-      - /dev/nvidia-uvm-tools:/dev/nvidia-uvm-tools
+    # Remove the devices section completely
+    # devices:
+    #   - /dev/nvidia0:/dev/nvidia0
+    #   - /dev/nvidiactl:/dev/nvidiactl
+    #   - /dev/nvidia-uvm:/dev/nvidia-uvm
+    #   - /dev/nvidia-uvm-tools:/dev/nvidia-uvm-tools
     networks:
       - app-network
     deploy:
@@ -26,8 +26,6 @@ services:
             - driver: nvidia
               count: all
               capabilities: [gpu]
-
-
   frontend:
     build: ./frontend
     ports:
@@ -41,7 +39,6 @@ services:
       - ./frontend/public:/app/public
     environment:
       - VITE_API_URL=http://backend:8000
-
 networks:
   app-network:
     driver: bridge

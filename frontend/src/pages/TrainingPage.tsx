@@ -10,6 +10,7 @@ interface Dataset { filename: string; size_mb: number }
 
 export default function TrainingPage() {
   const [kind, setKind] = useState<'tabular' | 'llm'>('tabular');
+  const [title, setTitle] = useState('');
   const [modelName, setModelName] = useState('distilbert-base-uncased');
   const [dataset, setDataset] = useState('');
   const [datasets, setDatasets] = useState<Dataset[]>([]);
@@ -38,6 +39,7 @@ export default function TrainingPage() {
       body: JSON.stringify({
         kind,
         ...(kind === 'llm' && { model_name: modelName }),
+        ...(title.trim() && { title: title.trim() }),
         dataset_filename: dataset,
         num_epochs:   numEpochs,
         // max_length:   maxLength,
@@ -79,6 +81,7 @@ export default function TrainingPage() {
                 </FormControl>
 
                 {kind === 'llm' && ( <>
+                  <TextField label="Nome do Job (opcional)" value={title} onChange={e => setTitle(e.target.value)} fullWidth />
                   <TextField label="Nome do Modelo" value={modelName} onChange={e => setModelName(e.target.value)} required fullWidth />
                   <TextField label="Epochs" type="number" fullWidth value={numEpochs} onChange={e => setNumEpochs(Math.max(1, +e.target.value))} />
                   {/* <TextField label="Max token length" type="number" fullWidth value={maxLength} onChange={e => setMaxLength(+e.target.value)} /> */}

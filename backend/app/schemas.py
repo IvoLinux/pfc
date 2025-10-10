@@ -1,14 +1,14 @@
+# schemas.py
 from datetime import datetime
 from typing import Optional, Dict, List, Any
-
 from pydantic import BaseModel, ConfigDict
 
-
-# Payloads
 class JobCreateTrain(BaseModel):
-    kind: str                   # "tabular" | "llm"
+    kind: str
     model_name: str
     dataset_filename: str
+    title: Optional[str] = None
+
     num_epochs:    int = 1
     max_length:    int = 512
     batch_size:    int = 8
@@ -16,23 +16,21 @@ class JobCreateTrain(BaseModel):
     weight_decay:  float = 0.01
     warmup_ratio:  float = 0.05
 
-
 class JobCreateInfer(BaseModel):
-    kind: str                   # "tabular" | "llm"
+    kind: str
     dataset_filename: str
-    checkpoint_filename: str             # *.joblib  or  *.pt
+    checkpoint_filename: str
+    title: Optional[str] = None
 
-
-# Responses
 class JobStatus(BaseModel):
     id: str
     kind: str
     status: str
     progress: int
     submitted_at: datetime
+    title: Optional[str] = None
     metrics_json: Optional[Dict[str, float]] = None
     model_config = ConfigDict(from_attributes=True)
-
 
 class InferenceResult(BaseModel):
     metrics: Dict[str, float]
